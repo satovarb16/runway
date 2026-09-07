@@ -9,33 +9,48 @@
 The plugin's `.mcp.json` pins an exact version, so updating the plugin pulls exactly that
 server build. Every release uses a **new** tag, so the pin changes and `uvx` never serves a
 cached build of the previous one. For that to work, **every release bumps the same version
-in all four places below.**
+in all six places below.**
 
 > **PyPI publishing is currently blocked.** The `pypi` Trusted Publishing publisher was
-> never configured, and the account's 2FA is lost, so the `publish` job fails with
-> `invalid-publisher` on every tag. Until the account is recovered, the plugin pins the
-> **git tag** (`git+https://github.com/satovarb16/runwayMCP@vX.Y.Z`) instead of the PyPI
-> spec (`runway-mcp==X.Y.Z`), and the latest release on PyPI stays at `0.1.2`. The
-> version gate accepts either pin form, so switching back is a one-line change to
-> `plugins/runway-mcp/.mcp.json`.
+> never configured, and the account's 2FA is lost, so the `publish` job failed with
+> `invalid-publisher` on every tag. It is now **gated off** behind the repository
+> variable `PYPI_PUBLISH_ENABLED`, so a tag runs the full verify job and then skips the
+> upload instead of failing it. Set that variable to `"true"` (Settings → Secrets and
+> variables → Actions → Variables) once the publisher exists — no code change needed.
+> Until then the plugin pins the **git tag**
+> (`git+https://github.com/satovarb16/runwayMCP@vX.Y.Z`) instead of the PyPI spec
+> (`runway-mcp==X.Y.Z`), and the latest release on PyPI stays at `0.1.2`. The version
+> gate accepts either pin form, so switching back is a one-line change per pin.
 
 ## Release checklist
 
 1. Bump the version to `X.Y.Z` in all of:
-   - `pyproject.toml` → `version`
-   - `manifest.json` → `version` (Desktop Extension)
-   - `plugins/runway-mcp/.claude-plugin/plugin.json` → `version` (plugin update signal)
-   - `plugins/runway-mcp/.mcp.json` → the `--from` pin (currently
-     `git+https://github.com/satovarb16/runwayMCP@vX.Y.Z`; `runway-mcp==X.Y.Z` once PyPI
-     works again)
+
+   | File | What |
+   |---|---|
+   | `pyproject.toml` | `version` — **the source of truth**; everything else is checked against it |
+   | `manifest.json` | `version` (Desktop Extension) |
+   | `manifest.json` | `server.mcp_config.args` — the `--from` pin |
+   | `plugins/runway-mcp/.claude-plugin/plugin.json` | `version` (plugin update signal) |
+   | `plugins/runway-mcp/.mcp.json` | the `--from` pin |
+   | `README.md` | the *Option B: manual `.mcp.json`* snippet — people copy-paste it verbatim |
+
+   Pins are currently `git+https://github.com/satovarb16/runwayMCP@vX.Y.Z`; they become
+   `runway-mcp==X.Y.Z` once PyPI works again.
+
+   > This list said "four places" until 0.3.1 and was wrong: it omitted `manifest.json`'s
+   > pin, README's install snippet, and the test that asserted the version. The README
+   > omission is the dangerous one — nothing was checking the snippet every manual
+   > installer pastes.
+
 2. Verify they all match:
    ```bash
-   rg -I '"version"|^version' pyproject.toml manifest.json \
-     plugins/runway-mcp/.claude-plugin/plugin.json
-   rg -o '(==|@v)[0-9]+\.[0-9]+\.[0-9]+' plugins/runway-mcp/.mcp.json
+   uv run --extra dev pytest tests/test_docs_audit.py -q
    ```
-   CI re-checks this on every tag and refuses to publish on a mismatch, so this step is
-   a convenience, not the safety net.
+   `test_every_version_site_agrees_with_pyproject` reads the version out of
+   `pyproject.toml` and asserts the other five name it too. It hardcodes no version
+   number, so it never needs editing at release time. CI runs it, and the tag workflow
+   re-checks four of the six sites independently before it will publish.
 3. Sanity-check locally (CI runs all of this again before it uploads):
    ```bash
    uv run --extra dev pytest -q

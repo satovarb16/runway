@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "runway-mcp"
-version = "0.3.0"
+version = "0.3.1"
 description = "An MCP server that remembers your job hunt: applications, statuses, and which resume version you sent to each job — plus a live work-authorization warning."
 readme = "README.md"
 requires-python = ">=3.11"

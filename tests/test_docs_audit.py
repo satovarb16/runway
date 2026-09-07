@@ -48,6 +48,8 @@ _ROOT = Path(__file__).resolve().parent.parent
 _README_PATH = _ROOT / "README.md"
 _MANIFEST_PATH = _ROOT / "manifest.json"
 _PYPROJECT_PATH = _ROOT / "pyproject.toml"
+_PLUGIN_JSON_PATH = _ROOT / "plugins" / "runway-mcp" / ".claude-plugin" / "plugin.json"
+_PLUGIN_MCP_PATH = _ROOT / "plugins" / "runway-mcp" / ".mcp.json"
 
 _HISTORICAL_RE = re.compile(
     r"<!--\s*historical:start\s*-->.*?<!--\s*historical:end\s*-->",
@@ -409,8 +411,45 @@ def test_manifest_description_and_keywords_do_not_claim_removed_capabilities():
         assert stale_word not in long_description
 
 
-def test_version_is_0_3_0_everywhere():
-    data = tomllib.loads(_PYPROJECT_PATH.read_text(encoding="utf-8"))
+def test_every_version_site_agrees_with_pyproject():
+    """All six version sites name the same version as pyproject.toml.
+
+    This deliberately hardcodes no version number. The previous incarnation
+    asserted the literal "0.3.0" (in its name, too), which is the exact
+    failure this module's docstring warns about: it moved the staleness into
+    the test, so every release had to edit the test that was supposed to be
+    guarding the release. Deriving the expected value from pyproject.toml
+    means this never needs touching again -- and it covers three sites the
+    old one missed entirely, including README's copy-paste install snippet,
+    which nothing checked and which every manual installer pastes verbatim.
+    """
+    version = tomllib.loads(_PYPROJECT_PATH.read_text(encoding="utf-8"))["project"][
+        "version"
+    ]
     manifest = json.loads(_MANIFEST_PATH.read_text(encoding="utf-8"))
-    assert data["project"]["version"] == "0.3.0"
-    assert manifest["version"] == "0.3.0"
+    plugin = json.loads(_PLUGIN_JSON_PATH.read_text(encoding="utf-8"))
+
+    assert manifest["version"] == version, "manifest.json version"
+    assert plugin["version"] == version, "plugin.json version"
+
+    # The three pins are what users actually run. A pin that lags the package
+    # version installs a different server than the release claims to ship.
+    pins = {
+        "manifest.json": manifest["server"]["mcp_config"]["args"],
+        "plugins/runway-mcp/.mcp.json": json.loads(
+            _PLUGIN_MCP_PATH.read_text(encoding="utf-8")
+        )["mcpServers"]["runway-mcp"]["args"],
+    }
+    for where, args in pins.items():
+        spec = next(a for a in args if a.startswith(("runway-mcp==", "git+")))
+        found = re.search(r"(?:==|@v)([0-9]+\.[0-9]+\.[0-9]+)$", spec)
+        assert found, f"{where}: cannot read a version out of the pin {spec!r}"
+        assert found.group(1) == version, (
+            f"{where}: pin says {found.group(1)}, not {version}"
+        )
+
+    readme = _README_PATH.read_text(encoding="utf-8")
+    assert f"runwayMCP@v{version}" in readme, (
+        f"README's install snippet does not pin v{version} -- "
+        "anyone copy-pasting it installs a different version"
+    )
