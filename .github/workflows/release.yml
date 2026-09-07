@@ -60,6 +60,16 @@ jobs:
     needs: verify
     runs-on: ubuntu-latest
 
+    # PyPI publishing is switched OFF at the repo, not commented out here: the
+    # Trusted Publishing publisher was never configured and the account's 2FA is
+    # lost, so this job fails with `invalid-publisher` on every single tag and
+    # paints a red X on a release that is otherwise fine. A skipped job is grey
+    # and honest; a failing one trains you to ignore the check.
+    # To turn publishing back on, set the repository variable
+    # PYPI_PUBLISH_ENABLED to "true" (Settings -> Secrets and variables ->
+    # Actions -> Variables) once the publisher exists. No code change, no PR.
+    if: vars.PYPI_PUBLISH_ENABLED == 'true'
+
     # Trusted Publishing: PyPI verifies this workflow's OIDC identity instead of
     # a long-lived API token, so there is no secret to leak or rotate. Requires a
     # one-time pending publisher configured on PyPI — see the README release note.

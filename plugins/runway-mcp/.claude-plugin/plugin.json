@@ -1,7 +1,7 @@
 {
   "name": "runway-mcp",
   "description": "A memory for your job hunt: which jobs you applied to, what state each is in, and which resume version you sent — plus a live work-authorization warning.",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "author": {
     "name": "satovarb"
   },

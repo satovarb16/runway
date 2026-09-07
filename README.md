@@ -40,7 +40,7 @@ Create a `.mcp.json` file in the directory where you run Claude Code:
   "mcpServers": {
     "runway-mcp": {
       "command": "uvx",
-      "args": ["--from", "git+https://github.com/satovarb16/runwayMCP@v0.3.0", "runway-mcp"]
+      "args": ["--from", "git+https://github.com/satovarb16/runwayMCP@v0.3.1", "runway-mcp"]
     }
   }
 }
@@ -385,20 +385,22 @@ PRs welcome.
 
 ## Releasing
 
-Publishing is driven by a tag. Bump the version in **all four** places listed in
-[RELEASING.md](RELEASING.md) — `pyproject.toml`, `manifest.json`, the plugin's
-`plugin.json`, and the version pin in the plugin's `.mcp.json` (currently the git tag
+Publishing is driven by a tag. Bump the version in **all six** places listed in
+[RELEASING.md](RELEASING.md) — `pyproject.toml`, `manifest.json` (both its `version` and
+its `--from` pin), the plugin's `plugin.json`, the plugin's `.mcp.json` pin, and the
+manual-install snippet above. Pins are currently the git tag
 `git+https://github.com/satovarb16/runwayMCP@vX.Y.Z`; `runway-mcp==X.Y.Z` once PyPI is
-unblocked — the release workflow's version gate accepts either). Then push the tag
-**from the release branch, before merging to `master`**:
+unblocked — the release workflow's version gate accepts either.
+`test_every_version_site_agrees_with_pyproject` fails the build if any of them drift.
+Then push the tag **from the release branch, before merging to `master`**:
 
 ```bash
-git tag v0.3.0
-git push origin v0.3.0
+git tag vX.Y.Z
+git push origin vX.Y.Z
 ```
 
-`.github/workflows/release.yml` takes it from there: it checks that the tag and all four
-version sites name the same version, runs lint and the full test suite on Python
+`.github/workflows/release.yml` takes it from there: it checks that the tag and the four
+version sites it reads name the same version, runs lint and the full test suite on Python
 3.11/3.12/3.13, builds the sdist and wheel, runs `twine check`, and only then uploads.
 Merge to `master` once the tag is up — the marketplace serves `master`, so a pin that
 lands there before its tag exists breaks every install until the tag catches up.
@@ -406,6 +408,13 @@ lands there before its tag exists breaks every install until the tag catches up.
 Everything that can fail runs *before* the upload on purpose — PyPI never lets a
 version number be reused, even after a delete, so a bad publish cannot be undone,
 only superseded.
+
+**The upload is currently switched off.** The `publish` job is gated on the repository
+variable `PYPI_PUBLISH_ENABLED`, because the Trusted Publishing publisher below was never
+configured and every tag died at the upload with `invalid-publisher`. A tag today runs the
+full verify job and then *skips* the upload rather than failing it. Set that variable to
+`"true"` once the publisher exists — it needs no code change. Meanwhile the pins point at
+the git tag, so releases work; PyPI just stays at `0.1.2`.
 
 **One-time setup.** The workflow authenticates with [PyPI Trusted
 Publishing](https://docs.pypi.org/trusted-publishers/) rather than an API token,
