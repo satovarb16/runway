@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import sqlite3
 import uuid
+from contextlib import nullcontext
 from datetime import datetime, timezone
 from enum import Enum
 
@@ -77,7 +78,6 @@ class SaveJobResult(BaseModel):
     custom_title: str | None = None
     updated: bool | None = None  # True=upserted existing record, False=new record
     possible_duplicate_id: str | None = None  # advisory only, never blocks (D10)
-    storage_path: str | None = None
     error: str | None = (
         # "invalid_input" | "not_found" | "duplicate_url" | "corrupt" | "write_error"
         None
@@ -155,7 +155,7 @@ def _escape_like(value: str) -> str:
     return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
-def _find_job_id_by_url(url: str) -> str | None:
+def _find_job_id_by_url(url: str, conn: sqlite3.Connection | None = None) -> str | None:
     """Resolve a job url to its surrogate id via an exact match (url is UNIQUE).
 
     Used by analyze.py's Step 1 (Guard 1 resolution, PR2 task 2.5l): the
@@ -165,7 +165,9 @@ def _find_job_id_by_url(url: str) -> str | None:
     PR1-shaped (raw url in, not the D5 extracted-fields contract).
 
     Args:
-        url: The raw job posting URL.
+        url:  The raw job posting URL.
+        conn: An already-open connection to read on. None opens one for the
+              duration of this call.
 
     Returns:
         The matching job's id, or None if no job has this url — this is the
@@ -175,12 +177,14 @@ def _find_job_id_by_url(url: str) -> str | None:
         ValueError: on a corrupt or unreadable database (propagates so the
                     caller can distinguish "corrupt" from "no match").
     """
-    with connect() as conn:
-        row = conn.execute("SELECT id FROM jobs WHERE url = ?", (url,)).fetchone()
+    with nullcontext(conn) if conn is not None else connect() as c:
+        row = c.execute("SELECT id FROM jobs WHERE url = ?", (url,)).fetchone()
     return row["id"] if row is not None else None
 
 
-def _find_job_ids_by_custom_title(custom_title: str) -> list[str]:
+def _find_job_ids_by_custom_title(
+    custom_title: str, conn: sqlite3.Connection | None = None
+) -> list[str]:
     """Resolve a custom_title to every job id sharing it, exact match.
 
     `custom_title` is NOT unique — `save_job_analysis` deliberately never
@@ -193,6 +197,8 @@ def _find_job_ids_by_custom_title(custom_title: str) -> list[str]:
 
     Args:
         custom_title: The exact custom_title to look up.
+        conn:         An already-open connection to read on. None opens one
+                      for the duration of this call.
 
     Returns:
         A list of matching job ids — possibly empty, possibly more than one.
@@ -200,8 +206,8 @@ def _find_job_ids_by_custom_title(custom_title: str) -> list[str]:
     Raises:
         ValueError: on a corrupt or unreadable database.
     """
-    with connect() as conn:
-        rows = conn.execute(
+    with nullcontext(conn) if conn is not None else connect() as c:
+        rows = c.execute(
             "SELECT id FROM jobs WHERE custom_title = ?", (custom_title,)
         ).fetchall()
     return [r["id"] for r in rows]
@@ -404,7 +410,10 @@ def save_job_analysis(
                     (target_id, jd_text),
                 )
 
+            # Both of these are the url-less-new-record case, so they share
+            # one branch rather than recomputing the same condition twice.
             possible_duplicate_id = None
+            message = None
             if not updated and final_url is None:
                 dup = conn.execute(
                     "SELECT id FROM jobs WHERE company = ? AND title = ? AND id != ?",
@@ -413,8 +422,6 @@ def save_job_analysis(
                 if dup is not None:
                     possible_duplicate_id = dup["id"]
 
-            message = None
-            if not updated and final_url is None:
                 message = (
                     f"Saved with custom_title={final_custom_title!r} and "
                     f"id={target_id!r} — no url was given. Keep the id: pass "
@@ -430,10 +437,16 @@ def save_job_analysis(
                 updated=updated,
                 possible_duplicate_id=possible_duplicate_id,
                 message=message,
-                storage_path=None,
             )
     except ValueError as exc:
         return SaveJobResult(success=False, error="corrupt", message=str(exc))
+    except sqlite3.Error as exc:
+        # connect() translates only its own setup phase; statements inside
+        # the yielded block stay raw. That includes the non-url
+        # IntegrityError re-raised above, and any UPDATE/INSERT that fails
+        # for a reason the block does not name (a full disk, a FK
+        # violation). Without this, "This tool NEVER raises" is false.
+        return SaveJobResult(success=False, error="write_error", message=str(exc))
 
 
 def list_jobs(
@@ -456,7 +469,8 @@ def list_jobs(
         status:    One ApplicationStatus value, or a list to match any member.
         min_score: Minimum score threshold (inclusive). None scores excluded.
         company:   Substring match against company, case-insensitive
-                    (COLLATE NOCASE, ASCII-only). This is SC-1, the release's
+                    (lower() on both sides, ASCII-only — SQLite's lower()
+                    does not fold non-ASCII). This is SC-1, the release's
                     headline query ("did I apply to Acme?") — D9.
         limit:     Maximum number of records to return (after sort).
         sort_by:   "analyzed_at" (default, newest first) or "score"
@@ -470,7 +484,13 @@ def list_jobs(
     params: list[object] = []
 
     if company is not None:
-        where_clauses.append("company LIKE ? ESCAPE '\\' COLLATE NOCASE")
+        # lower() on BOTH sides, not COLLATE NOCASE: LIKE is a function in
+        # SQLite and ignores collation entirely, so the COLLATE clause this
+        # replaces was dead text — the case-insensitivity came only from the
+        # default `case_sensitive_like = OFF`. Same ASCII-only semantics as
+        # documented, now stated by the query instead of assumed from a
+        # connection default a future PRAGMA could flip.
+        where_clauses.append("lower(company) LIKE lower(?) ESCAPE '\\'")
         params.append(f"%{_escape_like(company)}%")
 
     if since is not None:
@@ -540,12 +560,11 @@ def list_jobs(
             error_message=f"Invalid sort_by: {sort_by!r} (use 'analyzed_at' or 'score')",
         )
 
-    if limit is not None:
-        if limit <= 0:
-            return ListJobsResult(
-                success=False,
-                error_message="limit must be a positive integer",
-            )
+    if limit is not None and limit <= 0:
+        return ListJobsResult(
+            success=False,
+            error_message="limit must be a positive integer",
+        )
 
     sql = "SELECT * FROM jobs"
     if where_clauses:
@@ -559,7 +578,10 @@ def list_jobs(
         with connect() as conn:
             rows = conn.execute(sql, params).fetchall()
             jobs = [_row_to_stored_job(r) for r in rows]
-    except ValueError as exc:
+    except (ValueError, sqlite3.Error) as exc:
+        # sqlite3.Error too: connect() leaves caller-phase statements
+        # untranslated, so a table whose page is corrupt passes the schema
+        # check and then fails on this SELECT as a raw sqlite3.DatabaseError.
         return ListJobsResult(success=False, error_message=str(exc))
 
     return ListJobsResult(success=True, jobs=jobs, count=len(jobs))
@@ -635,6 +657,8 @@ def set_application_status(
             )
     except ValueError as exc:
         return SetStatusResult(success=False, error="corrupt", message=str(exc))
+    except sqlite3.Error as exc:
+        return SetStatusResult(success=False, error="write_error", message=str(exc))
 
 
 def get_job(
@@ -705,18 +729,16 @@ def get_job(
                 row = _find_job_by_url(conn, url)
                 lookup_key, lookup_value = "url", url
             else:
-                # Query directly against the already-open `conn` rather than
-                # calling `_find_job_ids_by_custom_title` (which opens its
-                # own connection) — avoids a needless nested connection
-                # while this one is already held open.
-                matching_ids = [
-                    r["id"]
-                    for r in conn.execute(
-                        "SELECT id FROM jobs WHERE custom_title = ?",
-                        (custom_title,),
-                    ).fetchall()
-                ]
-                if len(matching_ids) > 1:
+                # Full rows in ONE query, against the already-open `conn`.
+                # The ambiguity check needs only the count, and the single
+                # match needs the row this result set already carries —
+                # selecting ids and then re-fetching the winner by id was a
+                # second round trip for a row we had in hand.
+                matches = conn.execute(
+                    "SELECT * FROM jobs WHERE custom_title = ?", (custom_title,)
+                ).fetchall()
+                if len(matches) > 1:
+                    matching_ids = [m["id"] for m in matches]
                     return GetJobResult(
                         success=False,
                         error="ambiguous",
@@ -726,7 +748,7 @@ def get_job(
                             f"one of those as 'id' to disambiguate."
                         ),
                     )
-                row = _find_job_by_id(conn, matching_ids[0]) if matching_ids else None
+                row = matches[0] if matches else None
                 lookup_key, lookup_value = "custom_title", custom_title
 
             if row is None:
@@ -759,7 +781,7 @@ def get_job(
                 "FROM resume_versions WHERE job_id = ? ORDER BY created_at DESC",
                 (job.id,),
             ).fetchall()
-    except ValueError as exc:
+    except (ValueError, sqlite3.Error) as exc:
         return GetJobResult(success=False, error="corrupt", message=str(exc))
 
     resume_versions = [

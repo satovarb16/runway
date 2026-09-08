@@ -71,14 +71,14 @@ def test_schema_creates_all_four_tables(db_path):
     } <= names
 
 
-def test_schema_sets_user_version_3(db_path):
-    from tools._db import connect
+def test_schema_sets_current_user_version(db_path):
+    from tools._db import _SCHEMA_VERSION, connect
 
     with connect(db_path):
         pass
     # separate connection to prove it persisted
     with connect(db_path) as conn:
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == 3
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == _SCHEMA_VERSION
 
 
 # ---------------------------------------------------------------------------
@@ -406,3 +406,59 @@ def test_busy_timeout_is_the_first_pragma_configure_connection_issues(db_path):
         f"expected busy_timeout to be the FIRST statement, got: {executed[0]!r} "
         f"(full order: {executed})"
     )
+
+
+# ---------------------------------------------------------------------------
+# Pending upgrades: a database created before a schema statement shipped
+# ---------------------------------------------------------------------------
+
+
+def test_pending_upgrade_adds_missing_index_to_an_older_database(db_path):
+    """An existing install must GET a statement added to the schema later.
+
+    _ensure_schema takes the table-presence fast path forever once `jobs`
+    exists, so without _apply_pending_upgrades a database created by an
+    earlier release would never see the index — the exact gap that made
+    every resume read fall back to SCAN + TEMP B-TREE.
+    """
+    import sqlite3
+
+    from tools._db import _SCHEMA_VERSION, connect
+
+    with connect(db_path):
+        pass
+
+    # Rewind to a pre-index database stamped by the release before this one.
+    raw = sqlite3.connect(str(db_path))
+    raw.execute("DROP INDEX idx_resume_versions_created_at")
+    raw.execute(f"PRAGMA user_version = {_SCHEMA_VERSION - 1}")
+    raw.commit()
+    raw.close()
+
+    with connect(db_path) as conn:
+        names = {
+            r["name"] for r in conn.execute("PRAGMA index_list('resume_versions')")
+        }
+        assert "idx_resume_versions_created_at" in names
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == _SCHEMA_VERSION
+
+
+def test_latest_resume_query_uses_the_created_at_index(db_path):
+    """The index exists to take SCAN + TEMP B-TREE off every resume read.
+
+    Asserting on the query plan, not on timing: this is what regresses
+    silently if the index is dropped or the ORDER BY direction drifts.
+    """
+    from tools._db import connect
+
+    with connect(db_path) as conn:
+        plan = " ".join(
+            r["detail"]
+            for r in conn.execute(
+                "EXPLAIN QUERY PLAN SELECT * FROM resume_versions "
+                "ORDER BY created_at DESC LIMIT 1"
+            )
+        )
+
+    assert "idx_resume_versions_created_at" in plan
+    assert "TEMP B-TREE" not in plan.upper()

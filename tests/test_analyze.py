@@ -395,7 +395,7 @@ class TestResumePrecondition:
         which fails on the same database for the same reason."""
         import tools.analyze as analyze_mod
 
-        def _boom(job_id=None):
+        def _boom(job_id=None, conn=None):
             raise ValueError("Resume store is corrupt: bad data")
 
         monkeypatch.setattr(analyze_mod, "_general_resume", _boom)
@@ -406,6 +406,35 @@ class TestResumePrecondition:
 
         assert result.error == "corrupt"
         assert "corrupt" in result.message
+
+    def test_no_resume_still_wins_when_the_work_auth_read_would_fail(
+        self, db_path, monkeypatch
+    ):
+        """The no_resume check runs BEFORE the work-authorization read, not
+        after both reads.
+
+        Sharing one connection across the three reads is a performance
+        change and must not become a behaviour change. Reading work auth
+        eagerly alongside the resume — tidier, and what the first draft of
+        the shared-connection refactor did — makes a database with a fine
+        resume table and an unreadable work_authorizations table answer
+        "corrupt" where it has always answered "no_resume".
+        """
+        import tools.analyze as analyze_mod
+
+        def _boom(conn=None):
+            raise ValueError("work_authorizations is corrupt: bad data")
+
+        monkeypatch.setattr(analyze_mod, "_declared_authorizations", _boom)
+
+        from tools.analyze import analyze_job
+
+        result = analyze_job(title="SWE", company="Acme", country="USA")
+
+        assert result.error == "no_resume", (
+            "the work-auth read ran before the no_resume check and its "
+            "failure won the race"
+        )
 
     def test_corrupt_job_lookup_also_reported_as_corrupt_not_no_resume(
         self, db_path, monkeypatch
@@ -421,7 +450,7 @@ class TestResumePrecondition:
 
         import tools.analyze as analyze_mod
 
-        def _boom(url):
+        def _boom(url, conn=None):
             raise ValueError("Jobs store is corrupt: bad data")
 
         monkeypatch.setattr(analyze_mod, "_find_job_id_by_url", _boom)
@@ -568,7 +597,7 @@ class TestWorkAuthorizationPrecondition:
         _save_base_resume()
         import tools.analyze as analyze_mod
 
-        def _boom():
+        def _boom(conn=None):
             raise ValueError("work_authorizations store is corrupt")
 
         monkeypatch.setattr(analyze_mod, "_declared_authorizations", _boom)

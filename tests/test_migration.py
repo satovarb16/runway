@@ -366,12 +366,12 @@ def test_resolvable_job_url_links_to_migrated_job_id(db_path):
 def test_too_new_schema_refuses_and_does_not_rewrite_file(db_path):
     import sqlite3
 
-    from tools._db import SchemaTooNewError, connect
+    from tools._db import _SCHEMA_VERSION, SchemaTooNewError, connect
 
     with connect(db_path):
         pass
     raw = sqlite3.connect(str(db_path))
-    raw.execute("PRAGMA user_version = 4")
+    raw.execute(f"PRAGMA user_version = {_SCHEMA_VERSION + 1}")
     raw.commit()
     raw.close()
 

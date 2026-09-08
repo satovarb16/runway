@@ -57,7 +57,7 @@ from pydantic import BaseModel, ConfigDict, ValidationError
 # ---------------------------------------------------------------------------
 
 _DB_PATH: Path = Path.home() / ".config" / "runway-mcp" / "runway.db"
-_SCHEMA_VERSION: int = 3
+_SCHEMA_VERSION: int = 4
 _BUSY_TIMEOUT_MS: int = 10_000
 
 _JOBS_JSON_NAME = "jobs.json"
@@ -117,6 +117,23 @@ def _translate_sqlite_error(exc: sqlite3.Error) -> ValueError:
 # Schema DDL — one statement per list entry (sqlite3.execute takes exactly one)
 # ---------------------------------------------------------------------------
 
+# Every resume read path orders by created_at DESC — get_resume_version
+# ("latest"), list_resume_versions, and both of _general_resume's fallback
+# queries. Without this index all four report SCAN + USE TEMP B-TREE FOR
+# ORDER BY, sorting the whole table (full resume text in every row) to
+# return one. `jobs` has had the equivalent index since 0.3.0.
+_RESUME_CREATED_AT_INDEX = (
+    "CREATE INDEX IF NOT EXISTS idx_resume_versions_created_at "
+    "ON resume_versions(created_at DESC)"
+)
+
+# schema version -> statements that carry a database from version-1 to it.
+# Only databases that predate a version run its entry; a fresh database gets
+# the finished schema from _SCHEMA_STATEMENTS and is stamped current.
+_UPGRADES: dict[int, tuple[str, ...]] = {
+    4: (_RESUME_CREATED_AT_INDEX,),
+}
+
 _SCHEMA_STATEMENTS: list[str] = [
     """
     CREATE TABLE jobs (
@@ -160,6 +177,7 @@ _SCHEMA_STATEMENTS: list[str] = [
     "CREATE INDEX idx_jobs_status_score ON jobs(status, score DESC)",
     "CREATE INDEX idx_jobs_analyzed_at ON jobs(analyzed_at DESC)",
     "CREATE INDEX idx_resume_versions_job_id ON resume_versions(job_id)",
+    _RESUME_CREATED_AT_INDEX,
     """
     CREATE TRIGGER resume_versions_no_update
     BEFORE UPDATE ON resume_versions
@@ -528,6 +546,40 @@ def _validate_schema_version(conn: sqlite3.Connection) -> None:
         )
 
 
+def _apply_pending_upgrades(conn: sqlite3.Connection) -> None:
+    """Bring an existing database up to _SCHEMA_VERSION, once.
+
+    _ensure_schema is keyed on TABLE PRESENCE, so a database created by an
+    earlier release takes the fast path forever and would never see a
+    statement added to _SCHEMA_STATEMENTS afterwards. This is the one place
+    that closes that gap.
+
+    Registered upgrades are additive and idempotent (IF NOT EXISTS), because
+    the stamp is what makes them run once and the stamp is best-effort by
+    nature: a version with no entry here is assumed to need nothing, which
+    is true for 1-3 (no schema shipped between them differs from 4 except
+    this index).
+    """
+    if conn.execute("PRAGMA user_version").fetchone()[0] >= _SCHEMA_VERSION:
+        return
+
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        # Re-read under the write lock: two processes can both pass the
+        # unlocked check above on the same first run, exactly like
+        # _ensure_schema's doubled table-presence check.
+        current = conn.execute("PRAGMA user_version").fetchone()[0]
+        if current < _SCHEMA_VERSION:
+            for target in range(current + 1, _SCHEMA_VERSION + 1):
+                for statement in _UPGRADES.get(target, ()):
+                    conn.execute(statement)
+            conn.execute(f"PRAGMA user_version = {_SCHEMA_VERSION}")
+        conn.execute("COMMIT")
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise
+
+
 def _ensure_schema(conn: sqlite3.Connection, db_path: Path) -> None:
     """Create the schema (migrating legacy JSON if present) or validate it.
 
@@ -549,6 +601,7 @@ def _ensure_schema(conn: sqlite3.Connection, db_path: Path) -> None:
     """
     if _table_exists(conn, "jobs"):
         _validate_schema_version(conn)
+        _apply_pending_upgrades(conn)
         _warn_stale_json_ignored(db_path)
         return
 
@@ -561,6 +614,7 @@ def _ensure_schema(conn: sqlite3.Connection, db_path: Path) -> None:
             # the fast path above performs.
             conn.execute("COMMIT")
             _validate_schema_version(conn)
+            _apply_pending_upgrades(conn)
             _warn_stale_json_ignored(db_path)
             return
         _migrate_legacy_stores(conn, db_path)

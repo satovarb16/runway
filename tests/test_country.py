@@ -10,14 +10,25 @@ from __future__ import annotations
 def test_us_aliases_canonicalize_to_united_states():
     from tools._country import _canonical_country
 
-    for raw in ["US", "USA", "U.S.", "United States of America", "united states"]:
+    # "U.S."/"U.S.A." have no _ALIASES entry of their own and must not get
+    # one: punctuation is stripped BEFORE the lookup, so they arrive as
+    # "US"/"USA". "united states" needs no entry either -- an unknown key
+    # falls through to itself, which is already the canonical form.
+    for raw in [
+        "US",
+        "USA",
+        "U.S.",
+        "U.S.A.",
+        "United States of America",
+        "united states",
+    ]:
         assert _canonical_country(raw) == "UNITED STATES"
 
 
 def test_uk_aliases_canonicalize_to_united_kingdom():
     from tools._country import _canonical_country
 
-    for raw in ["UK", "Great Britain", "England"]:
+    for raw in ["UK", "U.K.", "GB", "Great Britain", "England", "united kingdom"]:
         assert _canonical_country(raw) == "UNITED KINGDOM"
 
 
