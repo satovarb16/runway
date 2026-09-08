@@ -21,28 +21,32 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
-      # This repo carries the version in FOUR files and they have drifted before:
+      # This repo carries the version in six places and they have drifted before:
       # 0.3.0 sat in pyproject/manifest while the plugin still pinned 0.1.2, so
       # every plugin install kept pulling the old package. A tag that disagrees
       # with any of them publishes something other than what the tag claims — and
-      # there is no taking it back. The plugin pin matters most: it is the version
-      # users actually run.
-      - name: Tag, package and plugin versions must all agree
+      # there is no taking it back.
+      #
+      # Only the TAG comparison lives here, because the tag is the one version
+      # site pytest cannot see. Every other site (manifest.json's version and
+      # pin, plugin.json, the plugin's .mcp.json pin, README's install snippet)
+      # is checked against pyproject.toml by
+      # test_every_version_site_agrees_with_pyproject, which runs in the "Run
+      # tests" step of this same job. tag == pyproject, plus pyproject == every
+      # site, gives tag == every site — without a second implementation of the
+      # same check. That second implementation is not hypothetical debt: the
+      # shell version this replaces had already drifted from the test's regex
+      # (it accepted `@X.Y.Z` without the `v`, the test does not), which is
+      # exactly how the next mismatch would have slipped through.
+      - name: Tag must agree with the packaged version
         run: |
           TAG="${GITHUB_REF_NAME#v}"
           PKG=$(python -c "import tomllib,pathlib;print(tomllib.loads(pathlib.Path('pyproject.toml').read_text(encoding='utf-8'))['project']['version'])")
-          MAN=$(python -c "import json,pathlib;print(json.loads(pathlib.Path('manifest.json').read_text(encoding='utf-8'))['version'])")
-          PLG=$(python -c "import json,pathlib;print(json.loads(pathlib.Path('plugins/runway-mcp/.claude-plugin/plugin.json').read_text(encoding='utf-8'))['version'])")
-          # The pin is either a PyPI spec (runway-mcp==X.Y.Z) or a git ref
-          # (git+https://...@vX.Y.Z); both end in the version, so match either.
-          PIN=$(python -c "import json,pathlib,re,sys;spec=json.loads(pathlib.Path('plugins/runway-mcp/.mcp.json').read_text(encoding='utf-8'))['mcpServers']['runway-mcp']['args'][1];m=re.search(r'(?:==|@v?)([0-9]+[.][0-9]+[.][0-9]+)\$',spec);print(m.group(1) if m else sys.exit('cannot read a version out of the plugin pin: '+spec))")
-          echo "tag=$TAG pyproject=$PKG manifest=$MAN plugin=$PLG pin=$PIN"
-          for v in "$PKG" "$MAN" "$PLG" "$PIN"; do
-            if [ "$TAG" != "$v" ]; then
-              echo "::error::version mismatch — tag=$TAG pyproject=$PKG manifest=$MAN plugin=$PLG pin=$PIN"
-              exit 1
-            fi
-          done
+          echo "tag=$TAG pyproject=$PKG"
+          if [ "$TAG" != "$PKG" ]; then
+            echo "::error::version mismatch — tag=$TAG pyproject=$PKG"
+            exit 1
+          fi
 
       - name: Install dependencies
         run: pip install -e ".[dev]"
