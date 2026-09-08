@@ -399,9 +399,11 @@ git tag vX.Y.Z
 git push origin vX.Y.Z
 ```
 
-`.github/workflows/release.yml` takes it from there: it checks that the tag and the four
-version sites it reads name the same version, runs lint and the full test suite on Python
-3.11/3.12/3.13, builds the sdist and wheel, runs `twine check`, and only then uploads.
+`.github/workflows/release.yml` takes it from there: it checks that the tag names the same
+version as `pyproject.toml` — the remaining five sites are checked against `pyproject.toml`
+by `test_every_version_site_agrees_with_pyproject` in the same run, so the two together pin
+all six — then runs lint and the full test suite on Python 3.11/3.12/3.13, builds the sdist
+and wheel, runs `twine check`, and only then uploads.
 Merge to `master` once the tag is up — the marketplace serves `master`, so a pin that
 lands there before its tag exists breaks every install until the tag catches up.
 

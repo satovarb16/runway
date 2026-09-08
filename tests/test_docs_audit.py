@@ -412,7 +412,13 @@ def test_manifest_description_and_keywords_do_not_claim_removed_capabilities():
 
 
 def test_every_version_site_agrees_with_pyproject():
-    """All six version sites name the same version as pyproject.toml.
+    """The five version sites downstream of pyproject.toml name its version.
+
+    Those five plus pyproject.toml itself are the six places RELEASING.md
+    lists. The release workflow adds the only site pytest cannot see — the
+    git tag — by comparing it against pyproject.toml, so the two checks
+    together cover all six with no overlapping second implementation.
+
 
     This deliberately hardcodes no version number. The previous incarnation
     asserted the literal "0.3.0" (in its name, too), which is the exact
@@ -432,8 +438,10 @@ def test_every_version_site_agrees_with_pyproject():
     assert manifest["version"] == version, "manifest.json version"
     assert plugin["version"] == version, "plugin.json version"
 
-    # The three pins are what users actually run. A pin that lags the package
-    # version installs a different server than the release claims to ship.
+    # These two pins are what users actually run; README's third is asserted
+    # separately below, since it is prose rather than JSON. A pin that lags
+    # the package version installs a different server than the release
+    # claims to ship.
     pins = {
         "manifest.json": manifest["server"]["mcp_config"]["args"],
         "plugins/runway-mcp/.mcp.json": json.loads(
@@ -441,7 +449,11 @@ def test_every_version_site_agrees_with_pyproject():
         )["mcpServers"]["runway-mcp"]["args"],
     }
     for where, args in pins.items():
-        spec = next(a for a in args if a.startswith(("runway-mcp==", "git+")))
+        # Default None rather than letting next() raise: a bare StopIteration
+        # here would report as an error with no message, in a module whose
+        # every other failure names the file and what is wrong with it.
+        spec = next((a for a in args if a.startswith(("runway-mcp==", "git+"))), None)
+        assert spec, f"{where}: no pin-shaped argument among {args!r}"
         found = re.search(r"(?:==|@v)([0-9]+\.[0-9]+\.[0-9]+)$", spec)
         assert found, f"{where}: cannot read a version out of the pin {spec!r}"
         assert found.group(1) == version, (

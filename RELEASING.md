@@ -60,8 +60,9 @@ in all six places below.**
    ```bash
    git tag vX.Y.Z && git push origin vX.Y.Z
    ```
-   `.github/workflows/release.yml` re-checks that the tag agrees with all four version
-   sites, lints, tests on Python 3.11/3.12/3.13, builds, runs `twine check`, and only
+   `.github/workflows/release.yml` re-checks that the tag agrees with `pyproject.toml`
+   (the test suite it runs covers the other five sites), lints, tests on Python
+   3.11/3.12/3.13, builds, runs `twine check`, and only
    then uploads to PyPI via Trusted Publishing. There is no token to set — do **not**
    `uv publish` by hand.
 
@@ -70,7 +71,7 @@ in all six places below.**
    > `/plugin marketplace update` — resolves that pin. If the tag it names doesn't exist
    > yet, `uvx` fails outright and the server never starts. Tagging first closes that
    > window instead of just shortening it. The tag points at the branch tip, where all
-   > four version sites already agree, which is exactly what the gate checks.
+   > six version sites already agree, which is exactly what the gate checks.
    >
    > If the run fails *before* the upload step, delete the tag
    > (`git push origin :vX.Y.Z`), fix, and re-cut it. Once PyPI accepts an upload that
