@@ -190,6 +190,14 @@ after upgrading migrates both files into the database automatically — a `.bak`
 original is written first, and the JSON files themselves are left untouched. Nothing to run,
 nothing to configure.
 
+**Schema upgrades are automatic, additive, and run once.** When a release adds something to
+the database schema, the first tool call after upgrading applies it to your existing file
+inside a single transaction and stamps the new schema version, so it never runs twice.
+Upgrades only ever *add* — nothing is dropped, rewritten, or reordered, and your rows are
+never touched. Going the other way is refused rather than attempted: a database written by a
+**newer** runway-mcp than the one you're running raises an error telling you to upgrade the
+package, because the file is fine and silently rewriting it to an older shape is not.
+
 If you have an even older, pre-0.2.0 `~/.config/runway-mcp/profile.json` (a structured profile
 from before resume versioning existed), it is **not** migrated automatically — the tool that
 used to read it back out, and the whole structured-profile system it belonged to, are gone in
