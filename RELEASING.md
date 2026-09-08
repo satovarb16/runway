@@ -2,8 +2,7 @@
 
 `runway-mcp` ships in two layers that must stay in lockstep:
 
-1. **Server code** — built by `uvx` from the pinned source (a git tag today, a PyPI
-   release once publishing is unblocked).
+1. **Server code** — downloaded by `uvx` from the pinned PyPI release.
 2. **Claude Code plugin** — pins that exact version and is what users install/update.
 
 The plugin's `.mcp.json` pins an exact version, so updating the plugin pulls exactly that
@@ -11,16 +10,13 @@ server build. Every release uses a **new** tag, so the pin changes and `uvx` nev
 cached build of the previous one. For that to work, **every release bumps the same version
 in all six places below.**
 
-> **PyPI publishing is currently blocked.** The `pypi` Trusted Publishing publisher was
-> never configured, and the account's 2FA is lost, so the `publish` job failed with
-> `invalid-publisher` on every tag. It is now **gated off** behind the repository
-> variable `PYPI_PUBLISH_ENABLED`, so a tag runs the full verify job and then skips the
-> upload instead of failing it. Set that variable to `"true"` (Settings → Secrets and
-> variables → Actions → Variables) once the publisher exists — no code change needed.
-> Until then the plugin pins the **git tag**
-> (`git+https://github.com/satovarb16/runwayMCP@vX.Y.Z`) instead of the PyPI spec
-> (`runway-mcp==X.Y.Z`), and the latest release on PyPI stays at `0.1.2`. The version
-> gate accepts either pin form, so switching back is a one-line change per pin.
+> **The `publish` job is gated on a repository variable.** `PYPI_PUBLISH_ENABLED` must be
+> `"true"` (Settings → Secrets and variables → Actions → Variables) or the upload is
+> skipped — grey and silent, not a failure. It exists because Trusted Publishing was
+> unconfigured for a long stretch and every tag died at the upload with
+> `invalid-publisher`, painting a red X on releases that were otherwise fine. The
+> publisher is configured now and the variable is set; the switch stays so publishing can
+> be parked again without editing this workflow.
 
 ## Release checklist
 
@@ -35,8 +31,10 @@ in all six places below.**
    | `plugins/runway-mcp/.mcp.json` | the `--from` pin |
    | `README.md` | the *Option B: manual `.mcp.json`* snippet — people copy-paste it verbatim |
 
-   Pins are currently `git+https://github.com/satovarb16/runwayMCP@vX.Y.Z`; they become
-   `runway-mcp==X.Y.Z` once PyPI works again.
+   Pins are `runway-mcp==X.Y.Z`. The version gate also accepts a git ref
+   (`git+https://github.com/satovarb16/runwayMCP@vX.Y.Z`), which is the escape hatch if
+   PyPI is ever unreachable at release time — but it costs users a source build and a
+   working `git`, so it is a fallback, not the default.
 
    > This list said "four places" until 0.3.1 and was wrong: it omitted `manifest.json`'s
    > pin, README's install snippet, and the test that asserted the version. The README
@@ -66,20 +64,27 @@ in all six places below.**
    then uploads to PyPI via Trusted Publishing. There is no token to set — do **not**
    `uv publish` by hand.
 
-   > **Why the tag goes first.** The marketplace serves `master`. The moment the bumped
-   > `.mcp.json` lands there, every new install — and every existing user who runs
-   > `/plugin marketplace update` — resolves that pin. If the tag it names doesn't exist
-   > yet, `uvx` fails outright and the server never starts. Tagging first closes that
-   > window instead of just shortening it. The tag points at the branch tip, where all
-   > six version sites already agree, which is exactly what the gate checks.
-   >
    > If the run fails *before* the upload step, delete the tag
    > (`git push origin :vX.Y.Z`), fix, and re-cut it. Once PyPI accepts an upload that
    > number is burned for good — but nothing is published until every check has passed.
-5. **Then merge to `master`.** That is the signal Claude Code uses to offer/apply the
-   plugin update, and users get the new server build automatically via the pin. A squash
-   merge leaves the tagged commit off `master`'s history; it stays reachable through the
-   tag, so `uvx` still builds it. Use a merge commit if you want it in the history too.
+5. **Wait for the `publish` job to go green, then merge to `master`.** Not "wait for the
+   tag" — the tag is up the moment you push it, but the pin names a *PyPI version*, and
+   that version does not exist until the upload finishes a few minutes later.
+
+   > **Why the wait is the whole point.** The marketplace serves `master`. The moment the
+   > bumped `.mcp.json` lands there, every new install — and every existing user who runs
+   > `/plugin marketplace update` — resolves that pin. If PyPI doesn't have the version
+   > yet, `uvx` fails outright and the server never starts. That is exactly how 0.3.0
+   > shipped a pin to a version PyPI had never seen. Merging after the upload closes the
+   > window instead of shortening it.
+   >
+   > This is the one cost of pinning PyPI instead of a git tag: a git ref is valid the
+   > instant it is pushed, a PyPI version is valid only after CI says so. In exchange,
+   > users stop needing `git` and a source build, and the pin becomes immutable —
+   > a published version can never point at different code, while a tag can be moved.
+
+   A squash merge leaves the tagged commit off `master`'s history; it stays reachable
+   through the tag. Use a merge commit if you want it in the history too.
 
 ## Versioning
 

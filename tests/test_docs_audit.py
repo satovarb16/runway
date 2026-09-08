@@ -460,8 +460,12 @@ def test_every_version_site_agrees_with_pyproject():
             f"{where}: pin says {found.group(1)}, not {version}"
         )
 
+    # Either pin form, matching what the JSON pins above accept: PyPI is the
+    # default, the git ref is the fallback for a release where PyPI is
+    # unreachable. Asserting only one form would fail the build for a pin that
+    # is correct, just written the other way.
     readme = _README_PATH.read_text(encoding="utf-8")
-    assert f"runwayMCP@v{version}" in readme, (
-        f"README's install snippet does not pin v{version} -- "
+    assert f"runway-mcp=={version}" in readme or f"runwayMCP@v{version}" in readme, (
+        f"README's install snippet does not pin {version} -- "
         "anyone copy-pasting it installs a different version"
     )

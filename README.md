@@ -29,7 +29,7 @@ Claude Code wires up the MCP server for you — no JSON to edit.
 ```
 
 Then run `/reload-plugins` (or restart Claude Code) to load the new version. The plugin
-pins an exact release tag, so updating it pulls the matching server release.
+pins an exact release version, so updating it pulls the matching server release.
 
 ### Option B: manual `.mcp.json`
 
@@ -40,18 +40,13 @@ Create a `.mcp.json` file in the directory where you run Claude Code:
   "mcpServers": {
     "runway-mcp": {
       "command": "uvx",
-      "args": ["--from", "git+https://github.com/satovarb16/runwayMCP@v0.3.1", "runway-mcp"]
+      "args": ["--from", "runway-mcp==0.3.1", "runway-mcp"]
     }
   }
 }
 ```
 
-That's it. Open Claude Code — `uvx` builds and runs the server automatically.
-
-> **Why the git URL and not plain `uvx runway-mcp`?** The latest release on PyPI is
-> `0.1.2` — a much older server, from before the SQLite rewrite, with a tool set that no
-> longer matches this README. Installing from the tag gets you the current version.
-> See [Releasing](#releasing).
+That's it. Open Claude Code — `uvx` downloads and runs the server automatically.
 
 > **Don't have `uv`?** Install it: `pip install uv` (or see [uv docs](https://docs.astral.sh/uv/getting-started/installation/))
 
@@ -388,11 +383,10 @@ PRs welcome.
 Publishing is driven by a tag. Bump the version in **all six** places listed in
 [RELEASING.md](RELEASING.md) — `pyproject.toml`, `manifest.json` (both its `version` and
 its `--from` pin), the plugin's `plugin.json`, the plugin's `.mcp.json` pin, and the
-manual-install snippet above. Pins are currently the git tag
-`git+https://github.com/satovarb16/runwayMCP@vX.Y.Z`; `runway-mcp==X.Y.Z` once PyPI is
-unblocked — the release workflow's version gate accepts either.
+manual-install snippet above. Pins are `runway-mcp==X.Y.Z`, resolved from PyPI.
 `test_every_version_site_agrees_with_pyproject` fails the build if any of them drift.
-Then push the tag **from the release branch, before merging to `master`**:
+Then push the tag **from the release branch, and merge only once the `publish` job is
+green**:
 
 ```bash
 git tag vX.Y.Z
@@ -404,8 +398,8 @@ version as `pyproject.toml` — the remaining five sites are checked against `py
 by `test_every_version_site_agrees_with_pyproject` in the same run, so the two together pin
 all six — then runs lint and the full test suite on Python 3.11/3.12/3.13, builds the sdist
 and wheel, runs `twine check`, and only then uploads.
-Merge to `master` once the tag is up — the marketplace serves `master`, so a pin that
-lands there before its tag exists breaks every install until the tag catches up.
+Merge to `master` once that upload is done — the marketplace serves `master`, so a pin that
+lands there before PyPI has the version breaks every install until the upload catches up.
 
 Everything that can fail runs *before* the upload on purpose — PyPI never lets a
 version number be reused, even after a delete, so a bad publish cannot be undone,
