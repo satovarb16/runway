@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import sqlite3
 import uuid
+from contextlib import nullcontext
 from datetime import datetime, timezone
 
 from pydantic import BaseModel, ConfigDict, ValidationError
@@ -64,7 +65,6 @@ class SaveResumeVersionResult(BaseModel):
     label: str | None = None
     parent_id: str | None = None
     job_id: str | None = None
-    storage_path: str | None = None
     error: str | None = (
         # "invalid_parent" | "parent_not_found" | "job_not_found"
         # | "invalid_input" | "write_error" | "corrupt"
@@ -110,7 +110,9 @@ def _row_to_version(row: sqlite3.Row) -> ResumeVersion:
     return ResumeVersion.model_validate(dict(row))
 
 
-def _general_resume(job_id: str | None = None) -> ResumeVersion | None:
+def _general_resume(
+    job_id: str | None = None, conn: sqlite3.Connection | None = None
+) -> ResumeVersion | None:
     """Select the GENERAL (non-job-tailored) resume for analyze_job (design D6).
 
     "General" means job_id IS NULL AND legacy_job_url IS NULL — the second
@@ -135,30 +137,28 @@ def _general_resume(job_id: str | None = None) -> ResumeVersion | None:
     Args:
         job_id: The job id about to be analyzed, so the fallback branch can
                 refuse a resume tailored to it. None disables that exclusion.
+        conn:   An already-open connection to read on. None opens one for
+                the duration of this call.
 
     Returns:
         The selected ResumeVersion, or None when nothing usable exists.
     """
-    with connect() as conn:
-        row = conn.execute(
+    with nullcontext(conn) if conn is not None else connect() as c:
+        row = c.execute(
             "SELECT * FROM resume_versions WHERE job_id IS NULL AND "
             "legacy_job_url IS NULL ORDER BY created_at DESC LIMIT 1"
         ).fetchone()
         if row is not None:
             return _row_to_version(row)
 
-        if job_id is None:
-            root_row = conn.execute(
-                "SELECT * FROM resume_versions WHERE parent_id IS NULL AND "
-                "legacy_job_url IS NULL ORDER BY created_at DESC LIMIT 1"
-            ).fetchone()
-        else:
-            root_row = conn.execute(
-                "SELECT * FROM resume_versions WHERE parent_id IS NULL AND "
-                "legacy_job_url IS NULL AND (job_id IS NULL OR job_id != ?) "
-                "ORDER BY created_at DESC LIMIT 1",
-                (job_id,),
-            ).fetchone()
+        # One query for both branches: with job_id NULL the first disjunct
+        # is true for every row, which is exactly the unfiltered fallback.
+        root_row = c.execute(
+            "SELECT * FROM resume_versions WHERE parent_id IS NULL AND "
+            "legacy_job_url IS NULL AND (? IS NULL OR job_id IS NULL OR job_id != ?) "
+            "ORDER BY created_at DESC LIMIT 1",
+            (job_id, job_id),
+        ).fetchone()
         return _row_to_version(root_row) if root_row is not None else None
 
 
@@ -197,9 +197,13 @@ def save_resume_version(
     """
     try:
         with connect(write=True) as conn:
-            count = conn.execute("SELECT COUNT(*) FROM resume_versions").fetchone()[0]
+            # Emptiness test, never a real count: COUNT(*) walks the whole
+            # covering index to answer a question the first row settles.
+            store_is_empty = (
+                conn.execute("SELECT 1 FROM resume_versions LIMIT 1").fetchone() is None
+            )
 
-            if count == 0:
+            if store_is_empty:
                 if parent_id is not None:
                     return SaveResumeVersionResult(
                         success=False,
@@ -287,6 +291,14 @@ def save_resume_version(
             )
     except ValueError as exc:
         return SaveResumeVersionResult(success=False, error="corrupt", message=str(exc))
+    except sqlite3.Error as exc:
+        # The IntegrityError clause inside the block catches the expected
+        # write failures; this catches the rest (a full disk, an append-only
+        # trigger firing from an unexpected path) so none of them escape as
+        # a raw traceback past "This tool NEVER raises".
+        return SaveResumeVersionResult(
+            success=False, error="write_error", message=str(exc)
+        )
 
 
 def get_resume_version(id: str) -> GetResumeVersionResult:
@@ -328,7 +340,7 @@ def get_resume_version(id: str) -> GetResumeVersionResult:
                     message=f"No resume version exists with id {id!r}.",
                 )
             return GetResumeVersionResult(success=True, version=_row_to_version(row))
-    except ValueError as exc:
+    except (ValueError, sqlite3.Error) as exc:
         return GetResumeVersionResult(success=False, error="corrupt", message=str(exc))
 
 
@@ -354,7 +366,11 @@ def list_resume_versions(
             success=False, error_message="limit must be a positive integer"
         )
 
-    sql = "SELECT * FROM resume_versions"
+    # Summary columns only, never SELECT * — the same finding get_job's
+    # linked-version query already fixes. This builds ResumeVersionSummary,
+    # which has no `content` field, so SELECT * would read every listed
+    # version's full resume text off disk purely to discard it.
+    sql = "SELECT id, label, parent_id, job_id, created_at FROM resume_versions"
     params: list[object] = []
     if job_id is not None:
         sql += " WHERE job_id = ?"
@@ -367,7 +383,7 @@ def list_resume_versions(
     try:
         with connect() as conn:
             rows = conn.execute(sql, params).fetchall()
-    except ValueError as exc:
+    except (ValueError, sqlite3.Error) as exc:
         return ListResumeVersionsResult(success=False, error_message=str(exc))
 
     summaries = [

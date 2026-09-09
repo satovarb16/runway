@@ -92,23 +92,17 @@ class TestAnalyzeImportGraph:
 
 
 class TestDependencySurface:
-    def test_scraping_and_matching_deps_removed_from_pyproject(self):
-        content = _PYPROJECT_PATH.read_text(encoding="utf-8")
-        deps_section = content.split("[project.urls]")[0]
-        for dep in ("requests", "beautifulsoup4", "rapidfuzz"):
-            assert dep not in deps_section, f"{dep} should be removed from dependencies"
-
-    def test_filelock_removed_pr2(self):
-        """2.6e: filelock's only consumer, tools/_storage.py, is deleted in
-        this PR — the dependency goes with it."""
-        content = _PYPROJECT_PATH.read_text(encoding="utf-8")
-        deps_section = content.split("[project.urls]")[0]
-        assert "filelock" not in deps_section
-
     def test_runtime_deps_are_exactly_mcp_and_pydantic(self):
         """SC-52, full satisfaction: the [project] dependencies list contains
         exactly mcp and pydantic — no requests, beautifulsoup4, rapidfuzz,
-        filelock, and no browser/Playwright optional group."""
+        filelock, and no browser/Playwright optional group.
+
+        This subsumes the two substring tests that used to sit above it (one
+        for requests/beautifulsoup4/rapidfuzz, one for filelock): set
+        equality forbids every name, named or not, and reads the parsed
+        dependency list rather than grepping raw TOML text, where a mention
+        in a comment counted as a failure.
+        """
         import tomllib
 
         data = tomllib.loads(_PYPROJECT_PATH.read_text(encoding="utf-8"))

@@ -40,11 +40,21 @@ this tool refuses to guess and returns `error="ambiguous_custom_title"`
 rather than silently picking one (which could arm the guard for the wrong
 job, or fail to arm it for the right one).
 
-Guard 2 (no_resume vs corrupt) is preserved by wrapping the url/custom_title
--> job_id resolution and the _general_resume call in a single try/except
-ValueError block: a corrupt or unreadable database raises from any of those
-calls and is reported as "corrupt"; "no_resume" is reported only when the
-database is readable but nothing usable was found.
+Guard 2 (no_resume vs corrupt) is preserved by wrapping every store read
+this tool makes — the url/custom_title -> job_id resolution, _general_resume
+and _declared_authorizations — in a single try/except block: a corrupt or
+unreadable database raises from any of those calls and is reported as
+"corrupt"; "no_resume" is reported only when the database is readable but
+nothing usable was found. Those three reads share ONE connection (each
+connect() pays a mkdir, four PRAGMAs, a schema check and a user_version
+read, and this tool used to open three). Sharing the connection does NOT
+mean reading everything up front: the no_resume check still sits between
+the resume read and the work-auth read, so a database with a readable
+resume table and an unreadable work_authorizations table still answers
+"no_resume" rather than "corrupt" — the ordering paragraph below is
+load-bearing. sqlite3.Error is caught alongside ValueError because
+connect() translates only its own setup phase; a statement failing
+mid-read stays raw.
 
 Work authorization (design D7, task 3b.1m) is Step 2, inserted between the
 resume precondition (Step 1, unchanged) and envelope-build (now Step 3):
@@ -76,8 +86,11 @@ comparison to tools/work_auth.py.
 
 from __future__ import annotations
 
+import sqlite3
+
 from pydantic import BaseModel
 
+from tools._db import connect
 from tools.jobs_store import _find_job_id_by_url, _find_job_ids_by_custom_title
 from tools.resumes import _general_resume, ResumeVersion
 from tools.work_auth import (
@@ -250,46 +263,57 @@ def analyze_job(
         populated on failure ("no_resume" | "corrupt" |
         "ambiguous_custom_title" | "no_work_authorization").
     """
-    # --- Step 1: Resolve job_id (Guard 1), then the resume precondition ---
+    # --- Steps 1 and 2: every store read this call makes, on ONE connection ---
+    # These are three independent reads (job lookup, general resume, declared
+    # authorizations) that used to open three connections — each paying a
+    # mkdir, four PRAGMAs, a schema check and a user_version read.
+    #
+    # The no_resume check stays BETWEEN the resume read and the work-auth
+    # read, where it has always been, rather than moving below the block
+    # with the other precondition. Reading both up front and checking after
+    # would be tidier and would be wrong: on a database whose
+    # work_authorizations table is unreadable but whose resume table is
+    # fine, the eager read raises and this returns "corrupt" where it used
+    # to return "no_resume". Laziness here is load-bearing, not incidental —
+    # see the ordering paragraph in the module docstring.
     try:
-        if url is not None:
-            job_id = _find_job_id_by_url(url)
-        elif custom_title is not None:
-            matching_ids = _find_job_ids_by_custom_title(custom_title)
-            if len(matching_ids) > 1:
+        with connect() as conn:
+            if url is not None:
+                job_id = _find_job_id_by_url(url, conn)
+            elif custom_title is not None:
+                matching_ids = _find_job_ids_by_custom_title(custom_title, conn)
+                if len(matching_ids) > 1:
+                    return AnalyzeJobResult(
+                        error="ambiguous_custom_title",
+                        message=(
+                            f"{len(matching_ids)} saved jobs share custom_title "
+                            f"{custom_title!r} (ids: {matching_ids}). Re-analyze "
+                            f"with 'url' instead, or use get_job with a specific "
+                            f"'id' to confirm which job this is before "
+                            f"proceeding."
+                        ),
+                    )
+                job_id = matching_ids[0] if matching_ids else None
+            else:
+                job_id = None
+            resume = _general_resume(job_id=job_id, conn=conn)
+            if resume is None:
                 return AnalyzeJobResult(
-                    error="ambiguous_custom_title",
-                    message=(
-                        f"{len(matching_ids)} saved jobs share custom_title "
-                        f"{custom_title!r} (ids: {matching_ids}). Re-analyze "
-                        f"with 'url' instead, or use get_job with a specific "
-                        f"'id' to confirm which job this is before "
-                        f"proceeding."
-                    ),
+                    error="no_resume",
+                    message="No resume found. Run save_resume_version first.",
                 )
-            job_id = matching_ids[0] if matching_ids else None
-        else:
-            job_id = None
-        resume = _general_resume(job_id=job_id)
-    except ValueError as exc:
-        # NOT no_resume: the database exists and is unreadable or malformed.
-        # Telling the user to run save_resume_version here sends them to a
-        # tool that will fail the same way, on the same file.
+            declared = _declared_authorizations(conn)
+    except (ValueError, sqlite3.Error) as exc:
+        # NOT no_resume / no_work_authorization: the database exists and is
+        # unreadable or malformed. Telling the user to run
+        # save_resume_version or set_work_authorization here sends them to a
+        # tool that will fail the same way, on the same file. sqlite3.Error
+        # is caught alongside ValueError because connect() only translates
+        # its own setup phase — a statement failing mid-read stays raw, and
+        # this tool never raises.
         return AnalyzeJobResult(error="corrupt", message=str(exc))
-    if resume is None:
-        return AnalyzeJobResult(
-            error="no_resume",
-            message="No resume found. Run save_resume_version first.",
-        )
 
-    # --- Step 2: Work-authorization precondition (design D7, task 3b.1m) ---
-    try:
-        declared = _declared_authorizations()
-    except ValueError as exc:
-        # NOT no_work_authorization: the database exists and is unreadable
-        # or malformed. Telling the user to call set_work_authorization here
-        # sends them to a tool that will fail the same way, on the same file.
-        return AnalyzeJobResult(error="corrupt", message=str(exc))
+    # --- Work-authorization precondition (design D7, task 3b.1m) ---
     if declared is None:
         return AnalyzeJobResult(
             error="no_work_authorization",

@@ -1121,3 +1121,35 @@ def test_get_job_resume_summaries_query_is_column_scoped_not_select_star(
         sql for sql in executed_sql if "resume_versions" in sql and "job_id = ?" in sql
     )
     assert "SELECT *" not in resume_query
+
+
+def test_list_jobs_returns_an_envelope_when_a_statement_fails_mid_read():
+    """A raw sqlite3.Error from the caller-phase must not escape the tool.
+
+    connect() deliberately translates only its own setup phase, so a
+    database whose sqlite_master page is intact but whose `jobs` table has a
+    corrupt page passes the schema check and then raises on the SELECT —
+    not a ValueError, so `except ValueError` alone let it crash through
+    "This tool NEVER raises".
+    """
+    import sqlite3
+    from contextlib import contextmanager
+
+    import pytest
+
+    import tools.jobs_store as js
+
+    @contextmanager
+    def _corrupt_page(path=None, *, write=False):
+        class _Conn:
+            def execute(self, *args, **kwargs):
+                raise sqlite3.DatabaseError("database disk image is malformed")
+
+        yield _Conn()
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(js, "connect", _corrupt_page)
+        result = js.list_jobs()
+
+    assert result.success is False
+    assert "malformed" in result.error_message

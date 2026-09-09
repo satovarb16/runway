@@ -26,6 +26,7 @@ count (both states have zero "real" rows) — see `_MARKER_CANONICAL`.
 from __future__ import annotations
 
 import sqlite3
+from contextlib import nullcontext
 from datetime import datetime, timezone
 
 from pydantic import BaseModel, ConfigDict
@@ -197,7 +198,9 @@ def set_work_authorization(countries: list[str]) -> SetWorkAuthorizationResult:
 # ---------------------------------------------------------------------------
 
 
-def _declared_authorizations() -> list[DeclaredCountry] | None:
+def _declared_authorizations(
+    conn: sqlite3.Connection | None = None,
+) -> list[DeclaredCountry] | None:
     """Return the declared countries, or None if never declared (SC-24).
 
     Distinguishes "set_work_authorization was never called" from "called
@@ -212,8 +215,8 @@ def _declared_authorizations() -> list[DeclaredCountry] | None:
         set_work_authorization only to have IT fail identically on the same
         broken database.
     """
-    with connect() as conn:
-        rows = conn.execute(
+    with nullcontext(conn) if conn is not None else connect() as c:
+        rows = c.execute(
             "SELECT country_canonical, country_raw FROM work_authorizations"
         ).fetchall()
     if not rows:
