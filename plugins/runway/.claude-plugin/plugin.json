@@ -1,11 +1,11 @@
 {
-  "name": "runway-mcp",
+  "name": "runway",
   "description": "A memory for your job hunt: which jobs you applied to, what state each is in, and which resume version you sent — plus a live work-authorization warning.",
   "version": "0.4.0",
   "author": {
     "name": "satovarb"
   },
-  "homepage": "https://github.com/satovarb16/runwayMCP",
-  "repository": "https://github.com/satovarb16/runwayMCP",
+  "homepage": "https://github.com/satovarb16/runway",
+  "repository": "https://github.com/satovarb16/runway",
   "license": "MIT"
 }

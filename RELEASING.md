@@ -27,12 +27,12 @@ in all six places below.**
    | `pyproject.toml` | `version` — **the source of truth**; everything else is checked against it |
    | `manifest.json` | `version` (Desktop Extension) |
    | `manifest.json` | `server.mcp_config.args` — the `--from` pin |
-   | `plugins/runway-mcp/.claude-plugin/plugin.json` | `version` (plugin update signal) |
-   | `plugins/runway-mcp/.mcp.json` | the `--from` pin |
+   | `plugins/runway/.claude-plugin/plugin.json` | `version` (plugin update signal) |
+   | `plugins/runway/.mcp.json` | the `--from` pin |
    | `README.md` | the *Option B: manual `.mcp.json`* snippet — people copy-paste it verbatim |
 
    Pins are `runway-mcp==X.Y.Z`. The version gate also accepts a git ref
-   (`git+https://github.com/satovarb16/runwayMCP@vX.Y.Z`), which is the escape hatch if
+   (`git+https://github.com/satovarb16/runway@vX.Y.Z`), which is the escape hatch if
    PyPI is ever unreachable at release time — but it costs users a source build and a
    working `git`, so it is a fallback, not the default.
 

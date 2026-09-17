@@ -4,12 +4,12 @@
     "name": "satovarb"
   },
   "metadata": {
-    "description": "Plugins by satovarb — starting with runway-mcp, a memory for your job hunt."
+    "description": "Plugins by satovarb — starting with runway, a memory for your job hunt."
   },
   "plugins": [
     {
-      "name": "runway-mcp",
-      "source": "./plugins/runway-mcp",
+      "name": "runway",
+      "source": "./plugins/runway",
       "description": "A memory for your job hunt: which jobs you applied to, what state each is in, and which resume version you sent — plus a live work-authorization warning."
     }
   ]

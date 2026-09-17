@@ -49,8 +49,8 @@ _ROOT = Path(__file__).resolve().parent.parent
 _README_PATH = _ROOT / "README.md"
 _MANIFEST_PATH = _ROOT / "manifest.json"
 _PYPROJECT_PATH = _ROOT / "pyproject.toml"
-_PLUGIN_JSON_PATH = _ROOT / "plugins" / "runway-mcp" / ".claude-plugin" / "plugin.json"
-_PLUGIN_MCP_PATH = _ROOT / "plugins" / "runway-mcp" / ".mcp.json"
+_PLUGIN_JSON_PATH = _ROOT / "plugins" / "runway" / ".claude-plugin" / "plugin.json"
+_PLUGIN_MCP_PATH = _ROOT / "plugins" / "runway" / ".mcp.json"
 
 _HISTORICAL_RE = re.compile(
     r"<!--\s*historical:start\s*-->.*?<!--\s*historical:end\s*-->",
@@ -446,9 +446,9 @@ def test_every_version_site_agrees_with_pyproject():
     # claims to ship.
     pins = {
         "manifest.json": manifest["server"]["mcp_config"]["args"],
-        "plugins/runway-mcp/.mcp.json": json.loads(
+        "plugins/runway/.mcp.json": json.loads(
             _PLUGIN_MCP_PATH.read_text(encoding="utf-8")
-        )["mcpServers"]["runway-mcp"]["args"],
+        )["mcpServers"]["runway"]["args"],
     }
     for where, args in pins.items():
         # Default None rather than letting next() raise: a bare StopIteration
@@ -467,7 +467,7 @@ def test_every_version_site_agrees_with_pyproject():
     # unreachable. Asserting only one form would fail the build for a pin that
     # is correct, just written the other way.
     readme = _README_PATH.read_text(encoding="utf-8")
-    assert f"runway-mcp=={version}" in readme or f"runwayMCP@v{version}" in readme, (
+    assert f"runway-mcp=={version}" in readme or f"runway@v{version}" in readme, (
         f"README's install snippet does not pin {version} -- "
         "anyone copy-pasting it installs a different version"
     )

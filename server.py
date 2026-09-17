@@ -18,7 +18,7 @@ from tools.jobs_store import (
 from tools.resumes import get_resume_version, list_resume_versions, save_resume_version
 from tools.work_auth import set_work_authorization
 
-mcp = FastMCP("runway-mcp")
+mcp = FastMCP("runway")
 
 mcp.tool()(analyze_job)
 mcp.tool()(save_job_analysis)

@@ -1,11 +1,11 @@
-# runwayMCP
+# Runway
 
-[![Release](https://img.shields.io/github/v/tag/satovarb16/runwayMCP?label=release)](https://github.com/satovarb16/runwayMCP/releases)
+[![Release](https://img.shields.io/github/v/tag/satovarb16/runway?label=release)](https://github.com/satovarb16/runway/releases)
 [![Python](https://img.shields.io/badge/python-3.11%20%7C%203.12%20%7C%203.13-blue)](pyproject.toml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-runwayMCP is a memory for your job hunt. You paste a job description into the conversation;
-Claude scores it, tailors a resume, and runwayMCP remembers which jobs you applied to, what
+Runway is a memory for your job hunt. You paste a job description into the conversation;
+Claude scores it, tailors a resume, and Runway remembers which jobs you applied to, what
 state each one is in, and — the part that matters most — **which resume version you sent for
 each job**. Ask "did I apply to Datadog?" months later and get back "yes, and here's the exact
 resume you sent."
@@ -15,8 +15,8 @@ resume you sent."
 ### Option A: Claude Code plugin (recommended — two commands)
 
 ```
-/plugin marketplace add satovarb16/runwayMCP
-/plugin install runway-mcp@satovarb
+/plugin marketplace add satovarb16/runway
+/plugin install runway@satovarb
 ```
 
 Claude Code wires up the MCP server for you — no JSON to edit.
@@ -25,14 +25,14 @@ Claude Code wires up the MCP server for you — no JSON to edit.
 
 ```
 /plugin marketplace update satovarb
-/plugin update runway-mcp@satovarb
+/plugin update runway@satovarb
 ```
 
 Then run `/reload-plugins` (or restart Claude Code) to load the new version. The plugin
 pins an exact release version, so updating it pulls the matching server release.
 
 **You will not be told a new version exists.** Claude Code can update plugins on its own
-and announce it — `Plugins updated: runway-mcp` — but by default that only happens for
+and announce it — `Plugins updated: runway` — but by default that only happens for
 marketplaces on its built-in allowlist, which covers Anthropic's own and nothing else.
 Every third-party marketplace, this one included, stays on whatever version you installed
 until you run the two commands above. No banner, no prompt, no notice.
@@ -56,7 +56,7 @@ Create a `.mcp.json` file in the directory where you run Claude Code:
 ```json
 {
   "mcpServers": {
-    "runway-mcp": {
+    "runway": {
       "command": "uvx",
       "args": ["--from", "runway-mcp==0.4.0", "runway-mcp"]
     }
@@ -71,16 +71,16 @@ That's it. Open Claude Code — `uvx` downloads and runs the server automaticall
 ### Alternative: install from source
 
 ```bash
-git clone https://github.com/satovarb16/runwayMCP
-cd runwayMCP
+git clone https://github.com/satovarb16/runway
+cd runway
 pip install -e ".[dev]"
 ```
 
 Then use `python -m server` in place of the `uvx` command and its `--from` arguments in
-your `.mcp.json`, and add `"cwd": "/path/to/runwayMCP"`.
+your `.mcp.json`, and add `"cwd": "/path/to/runway"`.
 
 <!-- historical:start -->
-## Why runwayMCP doesn't fetch job postings, and never checked visa sponsorship this way
+## Why Runway doesn't fetch job postings, and never checked visa sponsorship this way
 
 Earlier versions of this server fetched job postings from Greenhouse/Ashby/Lever
 (`fetch_job_posting`) and checked H-1B sponsorship history against USCIS data
@@ -155,7 +155,7 @@ The warning is advisory only — it never blocks `analyze_job` from returning a 
 
 ## Usage: paste a job, don't link one
 
-runwayMCP never fetches a job posting. Paste the description into the conversation, and
+Runway never fetches a job posting. Paste the description into the conversation, and
 Claude extracts what it needs:
 
 ```
@@ -520,7 +520,7 @@ has never been published. Go to
 | Field | Value |
 |---|---|
 | Owner | `satovarb16` |
-| Repository name | `runwayMCP` |
+| Repository name | `runway` |
 | Workflow name | `release.yml` |
 | Environment name | `pypi` |
 
