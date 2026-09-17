@@ -48,7 +48,7 @@ import uuid
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterator
+from typing import Callable, Iterator
 
 from pydantic import BaseModel, ConfigDict, ValidationError
 
@@ -57,7 +57,7 @@ from pydantic import BaseModel, ConfigDict, ValidationError
 # ---------------------------------------------------------------------------
 
 _DB_PATH: Path = Path.home() / ".config" / "runway-mcp" / "runway.db"
-_SCHEMA_VERSION: int = 4
+_SCHEMA_VERSION: int = 5
 _BUSY_TIMEOUT_MS: int = 10_000
 
 _JOBS_JSON_NAME = "jobs.json"
@@ -127,11 +127,48 @@ _RESUME_CREATED_AT_INDEX = (
     "ON resume_versions(created_at DESC)"
 )
 
-# schema version -> statements that carry a database from version-1 to it.
+# The UPDATE trigger names the columns it guards rather than banning UPDATE
+# outright. delete_job has to sever resume_versions.job_id when the job it
+# points at is removed, and severing a pointer to a row that no longer exists
+# is not rewriting history — the version's identity and content stay
+# absolutely immutable. `UPDATE OF` fires when a listed column appears in the
+# SET clause at all, even assigned its current value, so a mixed statement
+# like `SET job_id=NULL, content='x'` still aborts.
+_RESUME_NO_UPDATE_TRIGGER = (
+    "CREATE TRIGGER resume_versions_no_update "
+    "BEFORE UPDATE OF id, label, content, parent_id, legacy_job_url, created_at "
+    "ON resume_versions "
+    "BEGIN SELECT RAISE(ABORT, 'resume_versions is append-only: versions are "
+    "never modified (only job_id may be unlinked, by delete_job)'); END"
+)
+
+
+def _add_status_notes_column(conn: sqlite3.Connection) -> None:
+    """Add jobs.status_notes, skipping a database that already has it.
+
+    SQLite has no ADD COLUMN IF NOT EXISTS, and a bare ALTER is the one kind
+    of upgrade statement that cannot be re-run. The guard is what keeps the
+    idempotency promise below true for this entry.
+    """
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info('jobs')")}
+    if "status_notes" not in columns:
+        conn.execute("ALTER TABLE jobs ADD COLUMN status_notes TEXT")
+
+
+# schema version -> steps that carry a database from version-1 to it. A step
+# is either a SQL string or a callable taking the open connection, for the
+# cases SQL alone cannot express idempotently.
 # Only databases that predate a version run its entry; a fresh database gets
 # the finished schema from _SCHEMA_STATEMENTS and is stamped current.
-_UPGRADES: dict[int, tuple[str, ...]] = {
+_UpgradeStep = str | Callable[[sqlite3.Connection], None]
+
+_UPGRADES: dict[int, tuple[_UpgradeStep, ...]] = {
     4: (_RESUME_CREATED_AT_INDEX,),
+    5: (
+        _add_status_notes_column,
+        "DROP TRIGGER IF EXISTS resume_versions_no_update",
+        _RESUME_NO_UPDATE_TRIGGER,
+    ),
 }
 
 _SCHEMA_STATEMENTS: list[str] = [
@@ -147,6 +184,7 @@ _SCHEMA_STATEMENTS: list[str] = [
         score          INTEGER,
         recommendation TEXT,
         notes          TEXT,
+        status_notes   TEXT,
         analyzed_at    TEXT NOT NULL
     )
     """,
@@ -178,11 +216,7 @@ _SCHEMA_STATEMENTS: list[str] = [
     "CREATE INDEX idx_jobs_analyzed_at ON jobs(analyzed_at DESC)",
     "CREATE INDEX idx_resume_versions_job_id ON resume_versions(job_id)",
     _RESUME_CREATED_AT_INDEX,
-    """
-    CREATE TRIGGER resume_versions_no_update
-    BEFORE UPDATE ON resume_versions
-    BEGIN SELECT RAISE(ABORT, 'resume_versions is append-only: versions are never modified'); END
-    """,
+    _RESUME_NO_UPDATE_TRIGGER,
     """
     CREATE TRIGGER resume_versions_no_delete
     BEFORE DELETE ON resume_versions
@@ -554,11 +588,17 @@ def _apply_pending_upgrades(conn: sqlite3.Connection) -> None:
     statement added to _SCHEMA_STATEMENTS afterwards. This is the one place
     that closes that gap.
 
-    Registered upgrades are additive and idempotent (IF NOT EXISTS), because
-    the stamp is what makes them run once and the stamp is best-effort by
-    nature: a version with no entry here is assumed to need nothing, which
-    is true for 1-3 (no schema shipped between them differs from 4 except
-    this index).
+    Registered upgrades are additive and idempotent, because the stamp is
+    what makes them run once and the stamp is best-effort by nature: a
+    version with no entry here is assumed to need nothing, which is true for
+    1-3 (no schema shipped between them differs from 4 except this index).
+
+    Most steps get that idempotency from SQL itself (IF NOT EXISTS, or a
+    DROP paired with a CREATE). ADD COLUMN cannot — SQLite has no
+    ``IF NOT EXISTS`` for it — so a step may also be a callable that
+    inspects the database first; see ``_add_status_notes_column``. This
+    matters beyond theory: a test that rewinds only the stamp on an
+    already-current database would otherwise brick it on reopen.
     """
     if conn.execute("PRAGMA user_version").fetchone()[0] >= _SCHEMA_VERSION:
         return
@@ -571,8 +611,11 @@ def _apply_pending_upgrades(conn: sqlite3.Connection) -> None:
         current = conn.execute("PRAGMA user_version").fetchone()[0]
         if current < _SCHEMA_VERSION:
             for target in range(current + 1, _SCHEMA_VERSION + 1):
-                for statement in _UPGRADES.get(target, ()):
-                    conn.execute(statement)
+                for step in _UPGRADES.get(target, ()):
+                    if callable(step):
+                        step(conn)
+                    else:
+                        conn.execute(step)
             conn.execute(f"PRAGMA user_version = {_SCHEMA_VERSION}")
         conn.execute("COMMIT")
     except Exception:

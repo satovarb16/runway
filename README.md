@@ -231,7 +231,8 @@ the server only persists what Claude gives it.
 | `save_job_analysis` | Working — persists an analyzed job (upserts by id, then by url) |
 | `get_job` | Working — retrieves one job by id/url/custom_title, with linked resume version summaries |
 | `list_jobs` | Working — lists stored jobs, filterable by company, status, score, date |
-| `set_application_status` | Working — sets a stored job's application status |
+| `set_application_status` | Working — sets a stored job's application status and appends to its timeline |
+| `delete_job` | Working — permanently deletes a job by id/url, keeping tailored resume versions |
 | `save_resume_version` | Working — saves a resume version (raw text, append-only) |
 | `get_resume_version` | Working — retrieves a resume version by id or `"latest"` |
 | `list_resume_versions` | Working — lists saved resume versions, newest first |
@@ -319,6 +320,36 @@ because reopened hiring processes are real and the server doesn't get to say oth
 `id` over `url` — it always resolves, even for jobs saved without a URL. Returns
 `error="not_found"` for an unknown id/url, `error="invalid_status"` for an unrecognized value
 (record left unchanged).
+
+`notes` **appends** one dated line to the job's `status_notes` timeline — `[YYYY-MM-DD] applied
+— sent the one-page version` — and **never touches `notes`**, which holds the analysis. Omit it
+and the timeline is left alone; only the status changes. These were a single field until the
+two purposes collided in practice: recording "applied on the 17th" wiped the reasoning behind
+the score, so the highest-scoring jobs in the store were exactly the ones whose analysis was
+gone. To edit the analysis, call `save_job_analysis` with an `id` — omitted fields keep their
+previous values.
+
+### `delete_job(id: str | None = None, url: str | None = None) -> DeleteJobResult`
+
+Permanently deletes a stored job. For a record that should never have existed — a mistyped
+entry, a posting that turned out to be a duplicate, leftover test data. This is **not** the
+same as the `withdrawn` status, which says "I pulled out of this process": that's a real event
+worth keeping, and conflating the two poisons every later query.
+
+Lookup is by `id` or `url` **only** — deliberately not `custom_title`, which `get_job` does
+accept. `custom_title` isn't unique, and deleting by an ambiguous key is precisely how the
+wrong record gets destroyed.
+
+What happens to everything pointing at the job:
+
+- The captured job description is **deleted** — it belongs to the job and means nothing without it.
+- Tailored resume versions are **kept**, with `job_id` set to `NULL`. A resume you actually sent
+  outlives the posting it was aimed at, so the append-only tree stays intact; only the pointer
+  dies. This is why the append-only UPDATE trigger guards every column *except* `job_id`.
+
+There is **no confirmation flag and no undo**. The result is a receipt — it names the job and
+every resume version that was unlinked, so you can see exactly what disappeared. Returns
+`error="invalid_input"` when neither key is given, `error="not_found"` for an unknown id/url.
 
 ### `save_resume_version(content: str, label: str, parent_id: str | None = None, job_id: str | None = None) -> SaveResumeVersionResult`
 

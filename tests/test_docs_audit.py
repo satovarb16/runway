@@ -36,6 +36,7 @@ import pytest
 import server
 from tools.analyze import analyze_job
 from tools.jobs_store import (
+    delete_job,
     get_job,
     list_jobs,
     save_job_analysis,
@@ -66,6 +67,7 @@ _REGISTERED_TOOL_FUNCTIONS = {
     "get_job": get_job,
     "list_jobs": list_jobs,
     "set_application_status": set_application_status,
+    "delete_job": delete_job,
     "save_resume_version": save_resume_version,
     "get_resume_version": get_resume_version,
     "list_resume_versions": list_resume_versions,

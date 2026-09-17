@@ -66,7 +66,13 @@ class StoredJob(BaseModel):
     status: ApplicationStatus = ApplicationStatus.NOT_APPLIED
     score: int | None = None
     recommendation: str | None = None
+    # Why the analysis and the application timeline are separate columns:
+    # one field serving both meant recording "applied on the 17th" silently
+    # destroyed the reasoning behind the score. `notes` is written only by
+    # save_job_analysis; `status_notes` only by set_application_status, and
+    # only ever appended to.
     notes: str | None = None
+    status_notes: str | None = None
 
 
 class SaveJobResult(BaseModel):
@@ -118,8 +124,34 @@ class SetStatusResult(BaseModel):
     url: str | None = None
     status: str | None = None
     previous_status: str | None = None
+    # The timeline as it stands AFTER this call, so the caller can see what
+    # was recorded without a second round trip.
+    status_notes: str | None = None
     error: str | None = (
         None  # "not_found" | "corrupt" | "invalid_status" | "invalid_input" | "write_error"
+    )
+    message: str | None = None
+
+
+class DeleteJobResult(BaseModel):
+    """Return value for delete_job — a receipt for an irreversible act.
+
+    Every field beyond `success` exists so the reply can name exactly what
+    disappeared. This tool is the only destructive, id-targeted operation in
+    the surface and there is no undo, so the receipt IS the safety mechanism.
+    """
+
+    success: bool
+    id: str | None = None
+    url: str | None = None
+    title: str | None = None
+    company: str | None = None
+    # Versions whose job_id was severed. Their content is untouched — the
+    # append-only tree survives its pointer.
+    unlinked_resume_versions: list[str] = []
+    deleted_description: bool = False
+    error: str | None = (
+        None  # "invalid_input" | "not_found" | "corrupt" | "write_error"
     )
     message: str | None = None
 
@@ -131,6 +163,27 @@ class SetStatusResult(BaseModel):
 
 def _row_to_stored_job(row: sqlite3.Row) -> StoredJob:
     return StoredJob.model_validate(dict(row))
+
+
+def _append_status_note(
+    existing: str | None, status: str, note: str | None
+) -> str | None:
+    """Append one dated line to the application timeline.
+
+    Returns `existing` unchanged when there is no note to add, so a bare
+    status change (no `notes` argument) records nothing — the status column
+    already carries that fact, and a line saying only the status would be
+    noise.
+
+    The date, not a full timestamp: this is a human-readable log of an
+    application, and several events on one day are ordinary. `analyzed_at`
+    remains the machine-precision field.
+    """
+    if note is None:
+        return existing
+
+    stamped = f"[{datetime.now(timezone.utc).date().isoformat()}] {status} — {note}"
+    return stamped if not existing else f"{existing}\n{stamped}"
 
 
 def _find_job_by_id(conn: sqlite3.Connection, id: str) -> sqlite3.Row | None:
@@ -596,20 +649,32 @@ def set_application_status(
     """Set the application status of a stored job record, by id or url.
 
     Transitions are deliberately UNVALIDATED — any of the 7 status values may
-    transition to any other. If `notes` is provided, updates the notes field;
-    otherwise leaves it unchanged. This tool NEVER raises.
+    transition to any other. This tool NEVER raises.
+
+    `notes` APPENDS one dated line to `status_notes` and never touches
+    `notes`, the analysis field. Those were a single column until the two
+    purposes collided in practice: recording "applied on the 17th" wiped the
+    reasoning behind the score, so the highest-scoring jobs in the store were
+    exactly the ones whose analysis was gone. Splitting them makes that
+    structurally impossible rather than a rule to remember.
+
+    To edit the analysis itself, call save_job_analysis with an `id` — its
+    omit-preserve semantics leave every field you do not pass alone.
 
     Args:
         status: One of: not_applied, applied, interviewing, offer, rejected,
                 withdrawn, ghosted.
         id:     Job id (preferred — always resolvable, unlike url).
         url:    Alternate lookup key when id is not known.
-        notes:  Optional notes to attach (replaces existing notes if provided).
+        notes:  Optional follow-up note, appended to the timeline as
+                "[YYYY-MM-DD] <status> — <note>". Omitted, the timeline is
+                left untouched and only the status changes.
 
     Returns:
         SetStatusResult with success=True, id, url, status, previous_status
-        on success; success=False with error="invalid_status" (record
-        unchanged), error="not_found", or error/message on a store failure.
+        and the resulting status_notes on success; success=False with
+        error="invalid_status" (record unchanged), error="not_found", or
+        error/message on a store failure.
     """
     try:
         status_member = ApplicationStatus(status)
@@ -640,11 +705,15 @@ def set_application_status(
                 return SetStatusResult(success=False, error="not_found")
 
             previous_status = row["status"]
-            final_notes = notes if notes is not None else row["notes"]
+            final_status_notes = _append_status_note(
+                row["status_notes"], status_member.value, notes
+            )
 
+            # `notes` is deliberately absent from this UPDATE. The analysis
+            # is not this tool's to touch — use save_job_analysis for that.
             conn.execute(
-                "UPDATE jobs SET status=?, notes=? WHERE id=?",
-                (status_member.value, final_notes, row["id"]),
+                "UPDATE jobs SET status=?, status_notes=? WHERE id=?",
+                (status_member.value, final_status_notes, row["id"]),
             )
 
             return SetStatusResult(
@@ -653,12 +722,114 @@ def set_application_status(
                 url=row["url"],
                 status=status_member.value,
                 previous_status=previous_status,
+                status_notes=final_status_notes,
                 message=f"Status set to {status_member.value}.",
             )
     except ValueError as exc:
         return SetStatusResult(success=False, error="corrupt", message=str(exc))
     except sqlite3.Error as exc:
         return SetStatusResult(success=False, error="write_error", message=str(exc))
+
+
+def delete_job(id: str | None = None, url: str | None = None) -> DeleteJobResult:
+    """Permanently delete a stored job record, by id or url.
+
+    For a record that should never have existed: a mistyped entry, a posting
+    that turned out to be a duplicate, test data. This is NOT the same thing
+    as the `withdrawn` status, which says "I pulled out of this process" —
+    a real event worth keeping. Conflating the two poisons every later query,
+    because a withdrawn job still counts as a job you looked at.
+
+    Lookup is by `id` or `url` ONLY — deliberately not `custom_title`, which
+    get_job does accept. custom_title is not unique (save_job_analysis never
+    matches on it), and deleting by an ambiguous key is precisely how the
+    wrong record gets destroyed. Ambiguity is survivable on a read; here it
+    is not.
+
+    What happens to everything pointing at the job:
+
+    - `job_descriptions` row: deleted. The captured posting belongs to the
+      job and has no meaning without it.
+    - `resume_versions`: NOT deleted — `job_id` is set to NULL. The tree is
+      append-only and stays that way: a tailored resume is a document you
+      really sent, and it survives the posting it was aimed at. Only the
+      pointer dies, which is why the append-only UPDATE trigger guards every
+      column EXCEPT job_id.
+
+    There is no confirmation flag and no undo. The returned receipt names the
+    job and every resume version that was unlinked, so the caller can report
+    exactly what disappeared — with no delete_job there is no way back, the
+    receipt is the safety mechanism.
+
+    This tool NEVER raises.
+
+    Args:
+        id:  Job id (preferred — always resolvable, unlike url).
+        url: Alternate lookup key when id is not known.
+
+    Returns:
+        DeleteJobResult with success=True and the receipt on success;
+        success=False with error="invalid_input" (neither key given),
+        "not_found", "corrupt", or "write_error".
+    """
+    if id is None and url is None:
+        return DeleteJobResult(
+            success=False,
+            error="invalid_input",
+            message="Provide either 'id' or 'url'.",
+        )
+
+    try:
+        with connect(write=True) as conn:
+            row = (
+                _find_job_by_id(conn, id)
+                if id is not None
+                else _find_job_by_url(conn, url)  # type: ignore[arg-type]
+            )
+            if row is None:
+                return DeleteJobResult(success=False, error="not_found")
+
+            job_id = row["id"]
+
+            unlinked = [
+                r["id"]
+                for r in conn.execute(
+                    "SELECT id FROM resume_versions WHERE job_id = ?", (job_id,)
+                )
+            ]
+            # Order matters: both child references must be cleared before the
+            # parent row goes, because foreign_keys=ON makes the RESTRICT
+            # clauses real — a DELETE with either still pointing here fails.
+            if unlinked:
+                conn.execute(
+                    "UPDATE resume_versions SET job_id = NULL WHERE job_id = ?",
+                    (job_id,),
+                )
+            deleted_description = (
+                conn.execute(
+                    "DELETE FROM job_descriptions WHERE job_id = ?", (job_id,)
+                ).rowcount
+                > 0
+            )
+            conn.execute("DELETE FROM jobs WHERE id = ?", (job_id,))
+
+            return DeleteJobResult(
+                success=True,
+                id=job_id,
+                url=row["url"],
+                title=row["title"],
+                company=row["company"],
+                unlinked_resume_versions=unlinked,
+                deleted_description=deleted_description,
+                message=(
+                    f"Deleted {row['title']!r} at {row['company']!r}. "
+                    f"{len(unlinked)} resume version(s) unlinked and kept."
+                ),
+            )
+    except ValueError as exc:
+        return DeleteJobResult(success=False, error="corrupt", message=str(exc))
+    except sqlite3.Error as exc:
+        return DeleteJobResult(success=False, error="write_error", message=str(exc))
 
 
 def get_job(

@@ -69,6 +69,10 @@
       "description": "Set a stored job's application status (not_applied, applied, interviewing, offer, rejected, withdrawn, ghosted). Any status can transition to any other."
     },
     {
+      "name": "delete_job",
+      "description": "Permanently delete a stored job by id or url. For a record that should not exist (mistyped, duplicate, test data) — not the same as the 'withdrawn' status, which is a real event worth keeping. The captured job description goes with it; tailored resume versions are kept and only unlinked (job_id set to NULL). No undo: the result names the job and every version that was unlinked."
+    },
+    {
       "name": "set_work_authorization",
       "description": "Declare the full list of countries you may legally work in (replaces any prior declaration). Required before analyze_job will run: it compares each job's country against this list live and warns on a mismatch, but never blocks or stores the result."
     }
