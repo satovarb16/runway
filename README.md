@@ -31,6 +31,24 @@ Claude Code wires up the MCP server for you — no JSON to edit.
 Then run `/reload-plugins` (or restart Claude Code) to load the new version. The plugin
 pins an exact release version, so updating it pulls the matching server release.
 
+**You will not be told a new version exists.** Claude Code can update plugins on its own
+and announce it — `Plugins updated: runway-mcp` — but by default that only happens for
+marketplaces on its built-in allowlist, which covers Anthropic's own and nothing else.
+Every third-party marketplace, this one included, stays on whatever version you installed
+until you run the two commands above. No banner, no prompt, no notice.
+
+To get the announcement instead of the silence, turn auto-update on once:
+
+```
+/plugin
+```
+
+Pick the `satovarb` marketplace, then **Enable auto-update**. Claude Code then refreshes
+this marketplace and its installed plugins for you, and tells you when it did.
+
+That switch lives on your machine, not in this repo — a plugin author cannot enable it for
+you, which is exactly why it is written down here.
+
 ### Option B: manual `.mcp.json`
 
 Create a `.mcp.json` file in the directory where you run Claude Code:
