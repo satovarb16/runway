@@ -9,6 +9,7 @@ from mcp.server.fastmcp import FastMCP
 
 from tools.analyze import analyze_job
 from tools.jobs_store import (
+    delete_job,
     get_job,
     list_jobs,
     save_job_analysis,
@@ -24,6 +25,7 @@ mcp.tool()(save_job_analysis)
 mcp.tool()(get_job)
 mcp.tool()(list_jobs)
 mcp.tool()(set_application_status)
+mcp.tool()(delete_job)
 mcp.tool()(save_resume_version)
 mcp.tool()(get_resume_version)
 mcp.tool()(list_resume_versions)

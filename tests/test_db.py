@@ -428,10 +428,13 @@ def test_pending_upgrade_adds_missing_index_to_an_older_database(db_path):
     with connect(db_path):
         pass
 
-    # Rewind to a pre-index database stamped by the release before this one.
+    # Rewind to a pre-index database: version 3, the last one shipped before
+    # the index became part of the schema. Pinned deliberately rather than
+    # written as _SCHEMA_VERSION - 1, which silently stopped exercising this
+    # upgrade the moment a version landed on top of it.
     raw = sqlite3.connect(str(db_path))
     raw.execute("DROP INDEX idx_resume_versions_created_at")
-    raw.execute(f"PRAGMA user_version = {_SCHEMA_VERSION - 1}")
+    raw.execute("PRAGMA user_version = 3")
     raw.commit()
     raw.close()
 
@@ -462,3 +465,135 @@ def test_latest_resume_query_uses_the_created_at_index(db_path):
 
     assert "idx_resume_versions_created_at" in plan
     assert "TEMP B-TREE" not in plan.upper()
+
+
+# ---------------------------------------------------------------------------
+# 2.1d: the append-only UPDATE trigger protects CONTENT, not the job pointer
+#
+# delete_job has to sever resume_versions.job_id when the job it points at is
+# removed. Severing a pointer to a row that no longer exists is not rewriting
+# history, so the trigger names the columns it guards instead of blanket-
+# banning UPDATE. Everything that carries the version's identity or content
+# is still absolutely immutable.
+# ---------------------------------------------------------------------------
+
+
+def _insert_linked_resume(conn):
+    conn.execute(
+        "INSERT INTO jobs (id, url, custom_title, title, company, country, status, "
+        "score, recommendation, notes, analyzed_at) VALUES "
+        "('J9', 'https://ex.com/9', NULL, 'SWE', 'Acme', 'USA', 'not_applied', "
+        "NULL, NULL, NULL, '2025-01-01T00:00:00+00:00')"
+    )
+    conn.execute(
+        "INSERT INTO resume_versions (id, label, content, parent_id, job_id, "
+        "legacy_job_url, created_at) VALUES "
+        "('V9', 'Tailored', 'text', NULL, 'J9', NULL, "
+        "'2025-01-01T00:00:00+00:00')"
+    )
+
+
+def test_job_id_may_be_unlinked_on_resume_versions(db_path):
+    """The one UPDATE delete_job needs. Content is untouched."""
+    from tools._db import connect
+
+    with connect(db_path, write=True) as conn:
+        _insert_linked_resume(conn)
+
+    with connect(db_path, write=True) as conn:
+        conn.execute("UPDATE resume_versions SET job_id=NULL WHERE id='V9'")
+
+    with connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT job_id, content, label FROM resume_versions WHERE id='V9'"
+        ).fetchone()
+        assert row["job_id"] is None
+        assert row["content"] == "text"
+        assert row["label"] == "Tailored"
+
+
+def test_update_touching_content_alongside_job_id_still_raises(db_path):
+    """The mixed case: naming a guarded column anywhere in SET aborts."""
+    from tools._db import connect
+
+    with connect(db_path, write=True) as conn:
+        _insert_linked_resume(conn)
+
+    with connect(db_path, write=True) as conn:
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(
+                "UPDATE resume_versions SET job_id=NULL, content='hacked' WHERE id='V9'"
+            )
+
+
+@pytest.mark.parametrize(
+    "assignment",
+    [
+        "label='hacked'",
+        "parent_id='V1'",
+        "created_at='2030-01-01T00:00:00+00:00'",
+        "id='V99'",
+        "legacy_job_url='https://hacked'",
+    ],
+)
+def test_every_other_column_on_resume_versions_is_still_immutable(db_path, assignment):
+    from tools._db import connect
+
+    with connect(db_path, write=True) as conn:
+        _insert_linked_resume(conn)
+
+    with connect(db_path, write=True) as conn:
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(f"UPDATE resume_versions SET {assignment} WHERE id='V9'")
+
+
+def test_pending_upgrade_adds_status_notes_and_relaxes_the_trigger(db_path):
+    """A v4 database must gain the column AND the reworded trigger.
+
+    Rewinds a current database to the shape the previous release shipped,
+    then reopens it the way any real install would.
+    """
+    import sqlite3 as sq
+
+    from tools._db import _SCHEMA_VERSION, connect
+
+    with connect(db_path):
+        pass
+
+    raw = sq.connect(str(db_path))
+    raw.execute("ALTER TABLE jobs DROP COLUMN status_notes")
+    raw.execute("DROP TRIGGER resume_versions_no_update")
+    raw.execute(
+        "CREATE TRIGGER resume_versions_no_update BEFORE UPDATE ON resume_versions "
+        "BEGIN SELECT RAISE(ABORT, 'append-only'); END"
+    )
+    raw.execute("PRAGMA user_version = 4")
+    raw.commit()
+    raw.close()
+
+    with connect(db_path, write=True) as conn:
+        columns = {r["name"] for r in conn.execute("PRAGMA table_info('jobs')")}
+        assert "status_notes" in columns
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == _SCHEMA_VERSION
+        _insert_linked_resume(conn)
+        conn.execute("UPDATE resume_versions SET job_id=NULL WHERE id='V9'")
+
+
+def test_pending_upgrade_to_v5_is_safe_to_reapply(db_path):
+    """The ADD COLUMN is guarded, so a stamp that never landed cannot brick
+    the database on the next open — the promise _UPGRADES' docstring makes."""
+    import sqlite3 as sq
+
+    from tools._db import _SCHEMA_VERSION, connect
+
+    with connect(db_path):
+        pass
+
+    # Column and trigger already current; only the stamp is rewound.
+    raw = sq.connect(str(db_path))
+    raw.execute("PRAGMA user_version = 4")
+    raw.commit()
+    raw.close()
+
+    with connect(db_path) as conn:
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == _SCHEMA_VERSION

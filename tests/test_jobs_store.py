@@ -1153,3 +1153,234 @@ def test_list_jobs_returns_an_envelope_when_a_statement_fails_mid_read():
 
     assert result.success is False
     assert "malformed" in result.error_message
+
+
+# ---------------------------------------------------------------------------
+# status_notes: the analysis survives the whole application lifecycle
+#
+# Regression guard for the data-loss bug found in the 2026-09-17 end-to-end
+# run: `jobs.notes` served two incompatible purposes (score reasoning AND
+# follow-up notes), so recording "applied on the 17th" silently destroyed the
+# reasoning behind the score. The two are now separate columns, and
+# set_application_status never mentions `notes` in its UPDATE at all.
+# ---------------------------------------------------------------------------
+
+
+_ANALYSIS = "Strong match. Python, agents, MCP. Gaps: Docker, AWS."
+
+
+def _job_with_analysis():
+    from tools.jobs_store import save_job_analysis
+
+    return save_job_analysis(
+        url="https://ex.com/ai-eng",
+        title="AI Engineer",
+        company="Acme",
+        country="Peru",
+        score=78,
+        recommendation="APPLY",
+        notes=_ANALYSIS,
+    )
+
+
+def test_status_note_does_not_touch_analysis_notes(db_path):
+    """THE regression. A follow-up note must never overwrite the analysis."""
+    from tools.jobs_store import get_job, set_application_status
+
+    created = _job_with_analysis()
+    set_application_status(id=created.id, status="applied", notes="sent the v2 resume")
+
+    job = get_job(id=created.id).job
+    assert job.notes == _ANALYSIS
+
+
+def test_status_note_appends_to_status_notes_with_date_and_status(db_path):
+    import re
+
+    from tools.jobs_store import get_job, set_application_status
+
+    created = _job_with_analysis()
+    set_application_status(id=created.id, status="applied", notes="sent the v2 resume")
+
+    job = get_job(id=created.id).job
+    assert re.fullmatch(
+        r"\[\d{4}-\d{2}-\d{2}\] applied — sent the v2 resume", job.status_notes
+    )
+
+
+def test_two_status_changes_accumulate_in_status_notes(db_path):
+    from tools.jobs_store import get_job, set_application_status
+
+    created = _job_with_analysis()
+    set_application_status(id=created.id, status="applied", notes="sent the v2 resume")
+    set_application_status(id=created.id, status="rejected", notes="phone call")
+
+    job = get_job(id=created.id).job
+    lines = job.status_notes.splitlines()
+    assert len(lines) == 2
+    assert lines[0].endswith("applied — sent the v2 resume")
+    assert lines[1].endswith("rejected — phone call")
+    assert job.notes == _ANALYSIS
+
+
+def test_status_change_without_notes_leaves_status_notes_untouched(db_path):
+    from tools.jobs_store import get_job, set_application_status
+
+    created = _job_with_analysis()
+    set_application_status(id=created.id, status="applied", notes="sent the v2 resume")
+    before = get_job(id=created.id).job.status_notes
+
+    set_application_status(id=created.id, status="interviewing")
+
+    job = get_job(id=created.id).job
+    assert job.status_notes == before
+    assert job.status == "interviewing"
+
+
+def test_set_application_status_echoes_the_resulting_timeline(db_path):
+    from tools.jobs_store import set_application_status
+
+    created = _job_with_analysis()
+    result = set_application_status(id=created.id, status="applied", notes="sent it")
+
+    assert result.success is True
+    assert result.status_notes.endswith("applied — sent it")
+
+
+def test_list_jobs_exposes_status_notes(db_path):
+    from tools.jobs_store import list_jobs, set_application_status
+
+    created = _job_with_analysis()
+    set_application_status(id=created.id, status="applied", notes="sent it")
+
+    record = list_jobs().jobs[0]
+    assert record.notes == _ANALYSIS
+    assert record.status_notes.endswith("applied — sent it")
+
+
+# ---------------------------------------------------------------------------
+# delete_job: the only destructive, id-targeted tool in the surface
+# ---------------------------------------------------------------------------
+
+
+def test_delete_job_by_id_removes_the_record(db_path):
+    from tools.jobs_store import delete_job, get_job, list_jobs
+
+    created = _job_with_analysis()
+    result = delete_job(id=created.id)
+
+    assert result.success is True
+    assert result.id == created.id
+    assert result.title == "AI Engineer"
+    assert result.company == "Acme"
+    assert list_jobs().count == 0
+    assert get_job(id=created.id).error == "not_found"
+
+
+def test_delete_job_by_url_removes_the_record(db_path):
+    from tools.jobs_store import delete_job, list_jobs
+
+    _job_with_analysis()
+    result = delete_job(url="https://ex.com/ai-eng")
+
+    assert result.success is True
+    assert list_jobs().count == 0
+
+
+def test_delete_job_without_id_or_url_returns_invalid_input(db_path):
+    from tools.jobs_store import delete_job, list_jobs
+
+    _job_with_analysis()
+    result = delete_job()
+
+    assert result.success is False
+    assert result.error == "invalid_input"
+    assert list_jobs().count == 1
+
+
+def test_delete_job_unknown_id_returns_not_found(db_path):
+    from tools.jobs_store import delete_job
+
+    result = delete_job(id="0" * 32)
+
+    assert result.success is False
+    assert result.error == "not_found"
+
+
+def test_delete_job_removes_the_linked_job_description(db_path):
+    from tools.jobs_store import delete_job, save_job_analysis
+
+    created = save_job_analysis(
+        url="https://ex.com/jd",
+        title="AI Engineer",
+        company="Acme",
+        country="Peru",
+        jd_text="full posting text",
+    )
+    result = delete_job(id=created.id)
+
+    assert result.success is True
+    assert result.deleted_description is True
+
+
+def test_delete_job_reports_when_there_was_no_description(db_path):
+    from tools.jobs_store import delete_job
+
+    created = _job_with_analysis()
+    result = delete_job(id=created.id)
+
+    assert result.deleted_description is False
+
+
+def test_delete_job_unlinks_resume_versions_and_preserves_them_verbatim(db_path):
+    """The append-only promise holds: the CV survives, only the pointer dies."""
+    from tools.jobs_store import delete_job
+    from tools.resumes import get_resume_version, save_resume_version
+
+    created = _job_with_analysis()
+    base = save_resume_version(content="base text", label="Base")
+    tailored = save_resume_version(
+        content="tailored text",
+        label="Tailored",
+        parent_id=base.id,
+        job_id=created.id,
+    )
+
+    result = delete_job(id=created.id)
+
+    assert result.success is True
+    assert result.unlinked_resume_versions == [tailored.id]
+
+    survivor = get_resume_version(id=tailored.id).version
+    assert survivor.content == "tailored text"
+    assert survivor.label == "Tailored"
+    assert survivor.parent_id == base.id
+    assert survivor.job_id is None
+
+
+def test_delete_job_receipt_names_every_unlinked_version(db_path):
+    from tools.jobs_store import delete_job
+    from tools.resumes import save_resume_version
+
+    created = _job_with_analysis()
+    base = save_resume_version(content="base", label="Base")
+    v1 = save_resume_version(
+        content="v1", label="V1", parent_id=base.id, job_id=created.id
+    )
+    v2 = save_resume_version(
+        content="v2", label="V2", parent_id=v1.id, job_id=created.id
+    )
+
+    result = delete_job(id=created.id)
+
+    assert set(result.unlinked_resume_versions) == {v1.id, v2.id}
+
+
+def test_delete_job_does_not_accept_custom_title(db_path):
+    """custom_title is NOT unique — deleting by an ambiguous key is how you
+    delete the wrong record. id and url only, unlike get_job."""
+    import inspect
+
+    from tools.jobs_store import delete_job
+
+    assert "custom_title" not in inspect.signature(delete_job).parameters

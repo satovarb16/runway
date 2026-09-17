@@ -40,7 +40,7 @@ Create a `.mcp.json` file in the directory where you run Claude Code:
   "mcpServers": {
     "runway-mcp": {
       "command": "uvx",
-      "args": ["--from", "runway-mcp==0.3.1", "runway-mcp"]
+      "args": ["--from", "runway-mcp==0.4.0", "runway-mcp"]
     }
   }
 }
@@ -167,8 +167,9 @@ trace.
 ## Tracking applications
 
 ```
-You: "I applied to that Datadog role."
-Claude: set_application_status(id=<job id>, status="applied")
+You: "I applied to that Datadog role, sent the one-page version."
+Claude: set_application_status(id=<job id>, status="applied",
+                               notes="sent the one-page version")
 
 You: "Did I apply to Datadog?"
 Claude: list_jobs(company="Datadog")
@@ -181,6 +182,42 @@ Application status is one of 7 values: `not_applied`, `applied`, `interviewing`,
 move to any other (a reopened process is real), and `list_jobs(status=...)` takes either a
 single value or a list, so "what's currently in progress" (`applied`, `interviewing`, `offer`)
 is one call, not three.
+
+### Two kinds of notes, and why they're separate
+
+Each job carries **two** note fields, written by different tools:
+
+- **`notes`** — the analysis. Why the score is what it is, what matched, what's missing.
+  Written by `save_job_analysis`, and nothing else ever touches it.
+- **`status_notes`** — the application timeline. `set_application_status` appends one dated
+  line per update and never replaces what's already there.
+
+```
+notes         Score 78. Matched: Python, agents, production evidence.
+              Missing: Docker, AWS. The wall is the 3–5 years.
+
+status_notes  [2026-09-17] applied — sent the one-page version
+              [2026-09-24] interviewing — recruiter screen, 30 min
+              [2026-10-02] rejected — call, no reason given
+```
+
+These were one field until 0.4.0, and the collision was not theoretical: recording "applied
+on the 17th" overwrote the analysis, so the highest-scoring jobs in a store were exactly the
+ones whose reasoning had been destroyed. Splitting them makes that structurally impossible
+instead of a rule you have to remember. To revise the analysis itself, call
+`save_job_analysis` with the job's `id` — omitted fields keep their previous values.
+
+### Deleting a job
+
+`delete_job(id=...)` is for a record that should never have existed — a mistyped entry, a
+duplicate, leftover test data. It is **not** the same as the `withdrawn` status, which says
+you pulled out of a live process: that's a real event worth keeping, and treating the two as
+interchangeable poisons every later query.
+
+The job and its captured posting are deleted. **Tailored resume versions are kept**, with
+their `job_id` set to `NULL` — a resume you actually sent outlives the posting it was aimed
+at, so the append-only tree stays intact and only the pointer dies. There's no undo, so the
+result is a receipt: it names the job and every resume version that was unlinked.
 
 ## Storage and migration
 
@@ -231,7 +268,8 @@ the server only persists what Claude gives it.
 | `save_job_analysis` | Working — persists an analyzed job (upserts by id, then by url) |
 | `get_job` | Working — retrieves one job by id/url/custom_title, with linked resume version summaries |
 | `list_jobs` | Working — lists stored jobs, filterable by company, status, score, date |
-| `set_application_status` | Working — sets a stored job's application status |
+| `set_application_status` | Working — sets a stored job's application status and appends to its timeline |
+| `delete_job` | Working — permanently deletes a job by id/url, keeping tailored resume versions |
 | `save_resume_version` | Working — saves a resume version (raw text, append-only) |
 | `get_resume_version` | Working — retrieves a resume version by id or `"latest"` |
 | `list_resume_versions` | Working — lists saved resume versions, newest first |
@@ -319,6 +357,36 @@ because reopened hiring processes are real and the server doesn't get to say oth
 `id` over `url` — it always resolves, even for jobs saved without a URL. Returns
 `error="not_found"` for an unknown id/url, `error="invalid_status"` for an unrecognized value
 (record left unchanged).
+
+`notes` **appends** one dated line to the job's `status_notes` timeline — `[YYYY-MM-DD] applied
+— sent the one-page version` — and **never touches `notes`**, which holds the analysis. Omit it
+and the timeline is left alone; only the status changes. These were a single field until the
+two purposes collided in practice: recording "applied on the 17th" wiped the reasoning behind
+the score, so the highest-scoring jobs in the store were exactly the ones whose analysis was
+gone. To edit the analysis, call `save_job_analysis` with an `id` — omitted fields keep their
+previous values.
+
+### `delete_job(id: str | None = None, url: str | None = None) -> DeleteJobResult`
+
+Permanently deletes a stored job. For a record that should never have existed — a mistyped
+entry, a posting that turned out to be a duplicate, leftover test data. This is **not** the
+same as the `withdrawn` status, which says "I pulled out of this process": that's a real event
+worth keeping, and conflating the two poisons every later query.
+
+Lookup is by `id` or `url` **only** — deliberately not `custom_title`, which `get_job` does
+accept. `custom_title` isn't unique, and deleting by an ambiguous key is precisely how the
+wrong record gets destroyed.
+
+What happens to everything pointing at the job:
+
+- The captured job description is **deleted** — it belongs to the job and means nothing without it.
+- Tailored resume versions are **kept**, with `job_id` set to `NULL`. A resume you actually sent
+  outlives the posting it was aimed at, so the append-only tree stays intact; only the pointer
+  dies. This is why the append-only UPDATE trigger guards every column *except* `job_id`.
+
+There is **no confirmation flag and no undo**. The result is a receipt — it names the job and
+every resume version that was unlinked, so you can see exactly what disappeared. Returns
+`error="invalid_input"` when neither key is given, `error="not_found"` for an unknown id/url.
 
 ### `save_resume_version(content: str, label: str, parent_id: str | None = None, job_id: str | None = None) -> SaveResumeVersionResult`
 

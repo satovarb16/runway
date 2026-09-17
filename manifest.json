@@ -2,7 +2,7 @@
   "mcpb_version": "0.1",
   "name": "runway-mcp",
   "display_name": "runwayMCP",
-  "version": "0.3.1",
+  "version": "0.4.0",
   "description": "A memory for your job hunt: which jobs you applied to, what state each is in, and which resume version you sent — plus a live work-authorization warning.",
   "long_description": "runwayMCP remembers your job hunt so you don't have to. Paste a job description into the conversation — the server never fetches it — and Claude extracts the title, company, and country; runwayMCP persists the record, your application status across 7 states, and every tailored resume version you send, linked to the job it was written for.\n\n**The headline query:** \"did I apply to Datadog?\" → `list_jobs(company=\"Datadog\")` → \"yes, and here's the exact resume you sent\" (`get_job` → linked resume versions → `get_resume_version`).\n\n**What it does in one call (`analyze_job`):**\n- Loads your general resume text so Claude can score the fit against the pasted posting (0–100)\n- Compares the job's country against the countries you've declared you may legally work in, and warns on a mismatch — computed live, never cached\n- Returns a scoring rubric Claude applies to produce an `APPLY / CONSIDER / SKIP` recommendation\n\n**Setup:** Tell Claude to save your resume (`save_resume_version`) and declare where you may legally work (`set_work_authorization`) — both are one-time steps before the first `analyze_job` call.\n\n**Storage:** A single local SQLite database. Upgrading from a pre-0.3.0 install migrates your existing `jobs.json`/`resumes.json` automatically and backs up the originals — no action needed.\n\n**How it works:** The tools persist and shape data; Claude drafts and tailors your resume text, scores the fit, and decides what to save. No MCP sampling is used, so it works on any host.",
   "author": {
@@ -30,7 +30,7 @@
       "command": "uvx",
       "args": [
         "--from",
-        "runway-mcp==0.3.1",
+        "runway-mcp==0.4.0",
         "runway-mcp"
       ]
     }
@@ -67,6 +67,10 @@
     {
       "name": "set_application_status",
       "description": "Set a stored job's application status (not_applied, applied, interviewing, offer, rejected, withdrawn, ghosted). Any status can transition to any other."
+    },
+    {
+      "name": "delete_job",
+      "description": "Permanently delete a stored job by id or url. For a record that should not exist (mistyped, duplicate, test data) — not the same as the 'withdrawn' status, which is a real event worth keeping. The captured job description goes with it; tailored resume versions are kept and only unlinked (job_id set to NULL). No undo: the result names the job and every version that was unlinked."
     },
     {
       "name": "set_work_authorization",
