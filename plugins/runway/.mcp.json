@@ -1,6 +1,6 @@
 {
   "mcpServers": {
-    "runway-mcp": {
+    "runway": {
       "command": "uvx",
       "args": [
         "--from",
