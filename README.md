@@ -40,7 +40,7 @@ Create a `.mcp.json` file in the directory where you run Claude Code:
   "mcpServers": {
     "runway-mcp": {
       "command": "uvx",
-      "args": ["--from", "runway-mcp==0.3.1", "runway-mcp"]
+      "args": ["--from", "runway-mcp==0.4.0", "runway-mcp"]
     }
   }
 }
@@ -167,8 +167,9 @@ trace.
 ## Tracking applications
 
 ```
-You: "I applied to that Datadog role."
-Claude: set_application_status(id=<job id>, status="applied")
+You: "I applied to that Datadog role, sent the one-page version."
+Claude: set_application_status(id=<job id>, status="applied",
+                               notes="sent the one-page version")
 
 You: "Did I apply to Datadog?"
 Claude: list_jobs(company="Datadog")
@@ -181,6 +182,42 @@ Application status is one of 7 values: `not_applied`, `applied`, `interviewing`,
 move to any other (a reopened process is real), and `list_jobs(status=...)` takes either a
 single value or a list, so "what's currently in progress" (`applied`, `interviewing`, `offer`)
 is one call, not three.
+
+### Two kinds of notes, and why they're separate
+
+Each job carries **two** note fields, written by different tools:
+
+- **`notes`** — the analysis. Why the score is what it is, what matched, what's missing.
+  Written by `save_job_analysis`, and nothing else ever touches it.
+- **`status_notes`** — the application timeline. `set_application_status` appends one dated
+  line per update and never replaces what's already there.
+
+```
+notes         Score 78. Matched: Python, agents, production evidence.
+              Missing: Docker, AWS. The wall is the 3–5 years.
+
+status_notes  [2026-09-17] applied — sent the one-page version
+              [2026-09-24] interviewing — recruiter screen, 30 min
+              [2026-10-02] rejected — call, no reason given
+```
+
+These were one field until 0.4.0, and the collision was not theoretical: recording "applied
+on the 17th" overwrote the analysis, so the highest-scoring jobs in a store were exactly the
+ones whose reasoning had been destroyed. Splitting them makes that structurally impossible
+instead of a rule you have to remember. To revise the analysis itself, call
+`save_job_analysis` with the job's `id` — omitted fields keep their previous values.
+
+### Deleting a job
+
+`delete_job(id=...)` is for a record that should never have existed — a mistyped entry, a
+duplicate, leftover test data. It is **not** the same as the `withdrawn` status, which says
+you pulled out of a live process: that's a real event worth keeping, and treating the two as
+interchangeable poisons every later query.
+
+The job and its captured posting are deleted. **Tailored resume versions are kept**, with
+their `job_id` set to `NULL` — a resume you actually sent outlives the posting it was aimed
+at, so the append-only tree stays intact and only the pointer dies. There's no undo, so the
+result is a receipt: it names the job and every resume version that was unlinked.
 
 ## Storage and migration
 
