@@ -1,0 +1,36 @@
+name: Bug report
+description: Something in Runway behaves differently than documented.
+labels: ["bug"]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you asked Claude to do, and what Runway did instead.
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Runway version
+      description: "From Claude Code: `/plugin` shows the installed version. Otherwise the `--from runway-mcp==X.Y.Z` pin in your `.mcp.json`."
+      placeholder: "0.4.0"
+    validations:
+      required: true
+
+  - type: input
+    id: host
+    attributes:
+      label: MCP host
+      description: Claude Code, Claude Desktop, or something else — and how you installed Runway (plugin, manual `.mcp.json`, from source).
+      placeholder: "Claude Code, installed as a plugin"
+    validations:
+      required: true
+
+  - type: textarea
+    id: tool
+    attributes:
+      label: Tool output, if you have it
+      description: The error or the tool result. Redact anything from your own resume or applications you would rather not publish.
+      render: text
