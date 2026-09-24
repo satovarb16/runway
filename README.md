@@ -470,7 +470,10 @@ pip install -e ".[dev]"
 pre-commit install       # runs ruff lint + format before every commit
 ```
 
-PRs welcome.
+PRs welcome. [CONTRIBUTING.md](CONTRIBUTING.md) covers the two things that will otherwise
+fail your build — the deliberately split `runway` / `runway-mcp` naming, and the six places
+a version number lives — plus what Runway deliberately does not do, so you don't implement
+something that gets turned down on scope.
 
 ## Releasing
 
@@ -499,38 +502,34 @@ Everything that can fail runs *before* the upload on purpose — PyPI never lets
 version number be reused, even after a delete, so a bad publish cannot be undone,
 only superseded.
 
-**The upload is currently switched off.** The `publish` job is gated on the repository
-variable `PYPI_PUBLISH_ENABLED`, because the Trusted Publishing publisher below was never
-configured and every tag died at the upload with `invalid-publisher`. A tag today runs the
-full verify job and then *skips* the upload rather than failing it. Set that variable to
-`"true"` once the publisher exists — it needs no code change. Meanwhile the pins point at
-the git tag, so releases work; PyPI just stays at `0.1.2`.
+**How the upload authenticates.** The workflow uses [PyPI Trusted
+Publishing](https://docs.pypi.org/trusted-publishers/) rather than an API token, so there
+is no long-lived secret in the repo to leak or rotate: GitHub signs a short-lived token per
+run and PyPI verifies the signature. The `publish` job is additionally gated on the
+repository variable `PYPI_PUBLISH_ENABLED` — unset, a tag runs the full verify job and then
+*skips* the upload silently rather than failing it.
 
-**One-time setup.** The workflow authenticates with [PyPI Trusted
-Publishing](https://docs.pypi.org/trusted-publishers/) rather than an API token,
-so there is no long-lived secret in the repo to leak or rotate. GitHub signs a
-short-lived token per run and PyPI verifies the signature.
+Both are configured and working; the last two releases uploaded cleanly. This is the state
+they are in, which matters because none of it lives in the repo — nothing here can detect
+that it drifted:
 
-`runway-mcp` already exists on PyPI, so this is a publisher on an existing
-project — not a *pending* publisher, which is the separate flow for a name that
-has never been published. Go to
-<https://pypi.org/manage/project/runway-mcp/settings/publishing/>, choose
-**GitHub** under *Add a new publisher*, and fill in exactly:
+| Where | Field | Value |
+|---|---|---|
+| GitHub → Settings → Variables | `PYPI_PUBLISH_ENABLED` | `true` |
+| [PyPI publisher](https://pypi.org/manage/project/runway-mcp/settings/publishing/) | Owner | `satovarb16` |
+| | Repository name | `runway` |
+| | Workflow name | `release.yml` |
+| | Environment name | `pypi` |
 
-| Field | Value |
-|---|---|
-| Owner | `satovarb16` |
-| Repository name | `runway` |
-| Workflow name | `release.yml` |
-| Environment name | `pypi` |
+All four publisher fields must match or PyPI rejects the token — the environment name in
+particular, since it is what scopes the trust to the gated job rather than to any workflow
+in the repo. **Renaming the GitHub repository breaks the publisher**, because the trust is
+bound to the repository name; the next tag dies at the upload with `invalid-publisher`.
+That failure happens at the OIDC token exchange, before anything is published, so it does
+not burn the version number: delete the tag, fix the publisher, re-cut.
 
-All four must match or PyPI rejects the token — the environment name in
-particular, since it is what scopes the trust to the gated job rather than to
-any workflow in the repo.
-
-On the GitHub side, the `pypi` environment is created automatically the first
-time the workflow runs. Create it yourself under *Settings → Environments* if you
-want to add required reviewers first, which gates the upload behind a manual
+The `pypi` environment itself is created automatically by the first run. Add required
+reviewers to it under *Settings → Environments* to gate the upload behind a manual
 approval — worth doing, given that a published version can never be reused.
 
 ## License
